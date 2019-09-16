@@ -10,8 +10,9 @@ The final goal is to allow creation of multiprocess servers with minimal relianc
 * **multiprocessing** itself - allows one process to use another process object transparently. The module is know to have many bugs and the transparent access is in fact a serialization of accessing function sent via socket/pipe, which may become incredibly slow and glitchy even for a level of some mediocre python project
 * **multiprocessing.shared_memory** - very primitive implementation of OS-level shared memory
 * **multiprocessing.sharedctypes** - uses multiprocessing.shared_memory to implement a simple memory manager which is used for sharing of ctypes' structures
-* ** https://sourceforge.net/projects/poshmodule/ ** - really nice try to implement effective object sharing, but native python objects have inherent resistance to sharing, thus sharing objects is a dead end - you need an object born for being shared. Also the implementation is based on fork and absolute addressing, thus inherently flawed.
-* ** https://github.com/dRoje/pipe-proxy ** - small modification a regular multiprocessing object proxy.
+* https://sourceforge.net/projects/poshmodule/ - really nice try to implement effective object sharing, but native python objects have inherent resistance to sharing, thus sharing objects is a dead end - you need an object born for being shared. Also the implementation is based on fork and absolute addressing, thus inherently flawed.
+* https://github.com/dRoje/pipe-proxy - small modification a regular multiprocessing object proxy.
+* https://mpi4py.readthedocs.io/en/stable/tutorial.html - pickle-based messaging and raw sending of data between processes. Either low level or low performance tool. Could be utilized for sophisticated message passing between processes.
 
 ## Goals
 
