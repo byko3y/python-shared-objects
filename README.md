@@ -13,6 +13,7 @@ The final goal is to allow creation of multiprocess servers with minimal relianc
 * https://sourceforge.net/projects/poshmodule/ - really nice try to implement effective object sharing, but native python objects have inherent resistance to sharing, thus sharing objects is a dead end - you need an object born for being shared. Also the implementation is based on fork and absolute addressing, thus inherently flawed.
 * https://github.com/dRoje/pipe-proxy - small modification a regular multiprocessing object proxy.
 * https://mpi4py.readthedocs.io/en/stable/tutorial.html - pickle-based messaging and raw sending of data between processes. Either low level or low performance tool. Could be utilized for sophisticated message passing between processes.
+* https://arrow.apache.org/docs/python/plasma.html - by far the closest attempt to complete the same task. So far the most significant shortcoming is immutability of most of the objects. This also implies the data has no methods - it's pretty much dead for a living program. Despite the fact it provides great interoperability between languages, the living program in any language in fact studies the dead parts of the data body. Yes, it can load/unload a part of data, which is usefull for big data processing - not much useful for a mutable not-so-big-data.
 
 ## Goals
 
