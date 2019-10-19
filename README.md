@@ -27,3 +27,36 @@ Snapshots (RDBMS-style MVCC) are not viable due to intense garbage generation wi
 Unsynchronized access is still an option. Obviously, shared objects cannot be too complex, otherwise it will be really hard to implement the transaction feature.
 * Memory manager for managing allocation of small objects like a string or an element of list. Saves a lot of resources by using one piece of shared memory for multiple parts of data.<br/>
 * Parallel garbage collector. Python generational reference-count-based collector is a stop-the-world kind of collector. Initial implementations might lack the garbage collector overall, managing the references and release of unused objects by virtue of reference counting with atomic increment/decrement.
+
+## Prototyping results
+
+After implementation of a prototype (unpublished), the key problem of the CPython was quickly (re)discovered: reference counting requires intensive writing and locking of shared memory even for read-only access and garbage collection. Most moderns CPUs show a huge loss of performance when writing to a shared location due to caching mechanisms: every modification on shared location later causes cache miss for every new core reading this location and even surrounding ones. This performance drop can easily overshadow the gain of multiprocessing. There are sereval ways to resolve the problem:
+1. Abandon the reference counting, entrusting the GC with all the memory management. That's how PyPy, Java, .NET, V8, and others work. Nice route, but I really think it can be done without any GC;
+2. Keep the reference counting, but only modify the counter during actual modification of data. Tracking the read-only references becomes a pain in the ass.
+
+I had many ideas for the second route, I'll try to not mention failed ones here. Of course, stop-the-world deallocation mechanism could be used in both cases to ensure a consistent state of data during release. As well it might destroy the whole idea of non-interruptable python workers executing a code written in different languages e.g. Python, C, C++ - fairly common python program.
+
+Now, for a perfectly concurrent memory release, the trickiest part of tracking read-only references is the moment when a thread just read the reference value into register, but haven't stored it anywhere.  
+```
+  shared data: shared_cell -> shared_data  
+   local data: thread_cell  
+```
+Here a thread wants to access the shared_cell's value (shared_data) by placing a reference to shared_data into thread_cell. The thread algorythm (x86 pseudocode):  
+```
+  eax := [shared_cell]  
+  [thread_cell] := eax  
+```
+Suppose this thread switches the context right in between those two commands. Suppose another thread (releasing) at this time clears the reference and decides to free the shared_data which got zero refcount now.  
+```
+  shared data: shared_cell -> null
+```
+How can possibly another thread track the another's thread reference in eax to retain from releasing an object in use? For this reason, if we want to be able to make the release-or-postpone decision at this moment, the referencing thread has to inform the releasing thread about the new reference. For example, V8 concurrent collector does that via write barrier: https://v8.dev/blog/concurrent-marking
+
+However, unlike V8, we don't know the shared_data address until we read it, so we either need to block any release operations during reference read-traversal or block any read-traversal during memory release. In heavily concurrent environment blocking the releaser-thread could cause it to never complete the operation. On the other hand, single threaded V8 has short stop-the-world moments when the releaser can safely perform the actions. Considering the eclectic nature of python's world we can barely afford stop-the-world: single threaded python makes stop at particular spots, while concurrent interpreters have to wait for each other to stop at the spot, which can take an excessively long period of time. 
+
+Therefore, we can't let any of those threads to wait. Possible solution could be an asynchrounous freeing queue, which releases the shared_data when the referencing thread is clearly not referencing shared_data and not trying to read the reference to shared_data. And we might just find this moments, thanks to transaction mechanism: **when the shared_data is not referenced by any shared object (refcount = 0); and every transaction, which could reference the shared_data when it was visible in shared memory, have finished**. Not only it is a moment but also an infinite period of time starting when there are no active transactions exist which were started with shared_data being visible. We can check this condition by flagging the running transactions and waiting until the thread clears the flag on commit/retry/failure.
+
+Pros: transaction becoming a black box.  
+Cons: long running transaction will disable any memory release for duration of transaction.
+
+The transaction might actually stay inifinite amount of time with address of shared_data in register. Possible solution? Avoid long running transactions - would be too general and impossible for an inxperienced python developer. We could store the local references in some shared storage (dedicated to one thread for locality), so when an external thread  detects a non-progressing thread (e.g. IO wait), it could examine the references. Of course, this means the mechanisms of local reference acquisition/release should obey the lock and the mechanism prohibits the locking when acquisition/release is already in progress. This also implies that acquisition/release shall be performed by short known-to-never-block functions.
