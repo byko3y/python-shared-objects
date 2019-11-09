@@ -95,8 +95,8 @@ Some outline of the structures:
 (maybe) **new_value:** *similar to "value", but hold the uncommitted data*  
 &nbsp;&nbsp;&nbsp;&nbsp;**};**
 
-**thread_descriptor:** *semi-private thread structure* 
-&nbsp;&nbsp;&nbsp;&nbsp;**struct {** 
+**thread_descriptor:** *semi-private thread structure*  
+&nbsp;&nbsp;&nbsp;&nbsp;**struct {**  
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**last_success_tick:** *keeps the value from low-overhead timer function after the last successfull commit*;  
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**first_attempt_tick:** *when the first time the thread attempted some transaction but haven't succeeded*;  
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**queue_to_thread:** *the thread that will receive the lock after current thread finishes its transaction and does mutable_cell.lock = thread_descriptor.queue_next_thread*;  
