@@ -100,7 +100,7 @@ Some outline of the structures:
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**last_success_tick:** *keeps the value from low-overhead timer function after the last successfull commit*;  
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**first_attempt_tick:** *when the first time the thread attempted some transaction but haven't succeeded*;  
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**queue_to_thread:** *the thread that will receive the lock after current thread finishes its transaction and does mutable_cell.lock = thread_descriptor.queue_next_thread*;  
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**preempt_to_thread:** *unlike "queue_to_thread", this one will force the current thread to abort transaction in progress during the next call to transaction routines (the rest of the code is a black box, remember?);  
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**preempt_to_thread:** *unlike "queue_to_thread", this one will force the current thread to abort transaction in progress during the next call to transaction routines (the rest of the code is a black box, remember?);*  
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**transfered_lock:** *pointer to mutable_cell.lock; transfered, but not yet accepted lock*  
 &nbsp;&nbsp;&nbsp;&nbsp;**};**
 
