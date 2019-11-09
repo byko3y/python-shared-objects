@@ -7,6 +7,7 @@ The final goal is to allow creation of multiprocess servers with minimal relianc
 
 ## Known alternatives
 
+* PyPy STM - good attempt to make the language multithreaded by serializing the parallel thread. Nice attempt, but I believe it's a dead end because they try to bring concurrency into too many places, while lacking the most important safe concurrency in manipulating the shared data.
 * **multiprocessing** itself - allows one process to use another process object transparently. The module is know to have many bugs and the transparent access is in fact a serialization of accessing function sent via socket/pipe, which may become incredibly slow and glitchy even for a level of some mediocre python project
 * **multiprocessing.shared_memory** - very primitive implementation of OS-level shared memory
 * **multiprocessing.sharedctypes** - uses multiprocessing.shared_memory to implement a simple memory manager which is used for sharing of ctypes' structures
@@ -14,6 +15,7 @@ The final goal is to allow creation of multiprocess servers with minimal relianc
 * https://github.com/dRoje/pipe-proxy - small modification a regular multiprocessing object proxy.
 * https://mpi4py.readthedocs.io/en/stable/tutorial.html - pickle-based messaging and raw sending of data between processes. Either low level or low performance tool. Could be utilized for sophisticated message passing between processes.
 * https://arrow.apache.org/docs/python/plasma.html - by far the closest attempt to complete the same task. So far the most significant shortcoming is immutability of most of the objects. This also implies the data has no methods - it's pretty much dead for a living program. Despite the fact it provides great interoperability between languages, the living program in any language in fact studies the dead parts of the data body. Yes, it can load/unload a part of data, which is usefull for big data processing - not much useful for a mutable not-so-big-data.
+* https://en.wikipedia.org/wiki/Zope_Object_Database
 
 ## Goals
 
@@ -54,9 +56,58 @@ How can possibly another thread track the another's thread reference in eax to r
 
 However, unlike V8, we don't know the shared_data address until we read it, so we either need to block any release operations during reference read-traversal or block any read-traversal during memory release. In heavily concurrent environment blocking the releaser-thread could cause it to never complete the operation. On the other hand, single threaded V8 has short stop-the-world moments when the releaser can safely perform the actions. Considering the eclectic nature of python's world we can barely afford stop-the-world: single threaded python makes stop at particular spots, while concurrent interpreters have to wait for each other to stop at the spot, which can take an excessively long period of time. 
 
-Therefore, we can't let any of those threads to wait. Possible solution could be an asynchrounous freeing queue, which releases the shared_data when the referencing thread is clearly not referencing shared_data and not trying to read the reference to shared_data. And we might just find this moments, thanks to transaction mechanism: **when the shared_data is not referenced by any shared object (refcount = 0); and every transaction, which could reference the shared_data when it was visible in shared memory, have finished**. Not only it is a moment but also an infinite period of time starting when there are no active transactions exist which were started with shared_data being visible. We can check this condition by flagging the running transactions and waiting until the thread clears the flag on commit/retry/failure.
+Therefore, we can't let any of those threads to wait. Possible solution could be an asynchrounous freeing queue, which releases the shared_data when the referencing thread is clearly not referencing shared_data and not trying to read the reference to shared_data. And we might just find this moments, thanks to transaction mechanism: **when the shared_data is not referenced by any shared object (refcount = 0); and every transaction, which could reference the shared_data when it was visible in shared memory, have finished**. We can call it a **contemporary transaction** relative to the data being released. Not only it is a moment but also an infinite period of time starting when there are no active transactions exist which were started with shared_data being visible. We can check this condition by flagging the running transactions and waiting until the thread clears the flag on commit/retry/failure.
 
 Pros: transaction becoming a black box.  
 Cons: long running transaction will disable any memory release for duration of transaction.
 
 The transaction might actually stay inifinite amount of time with address of shared_data in register. Possible solution? Avoid long running transactions - would be too general and impossible for an inxperienced python developer. We could store the local references in some shared storage (dedicated to one thread for locality), so when an external thread  detects a non-progressing thread (e.g. IO wait), it could examine the references. Of course, this means the mechanisms of local reference acquisition/release should obey the lock and the mechanism prohibits the locking when acquisition/release is already in progress. This also implies that acquisition/release shall be performed by short known-to-never-block functions.
+
+
+# Transactional memory
+
+Explicit locks are tricky to write and can cause deadlocks or performance issues. Lock-free algorythms are even more tricky to write, although ready-made well-debugged lock-free functions are great for some tasks (not nearly always they offer any advantage though), but lock-free algorithms have an inherent flaw - they are not composable. For example, a value can be appended to a list or removed from list in a lock-free fashion, but we cannot easily append the value with condition of list length being less than, say, 10. That's where comes into play the idea of transactional memory: try to perform changes one by one, then commit with validation of consistency. However, lock-free operations might still come in handy for some simple and fundamental tasks.
+
+Naive implementations of transactional memory suffer from multiple problems and thus haven't gained a significant popularity. Those problems were known as early as 1992 ( [Performance issues in non-blocking synchronization on shared-memory multiprocessors](https://dl.acm.org/citation.cfm?id=135446) ), yet still there's no generally acccepted solution. I have a belief those problems can be solved - it's just not enough effort being put into the problem.  
+So, the problems are:
+* Performance in mid-high contention scenario. That's what killed GHC's STM. Performance can drop hunderd times (compared to a single thread) with intense abort/retry cycles doing no work and just hindering each other, making it pointless to implement those algorithms concurrently in Haskell. That's why concurrent modifications of shared memory should be limited as much as possible by sequential execution instead of endless retries;
+* Many implementations of transactional memory are blocking, although the whole idea of transactional memory is to make a non-blocking concurrent operation which could allow to perform another non-blocking operation at the same time i.e. compose function;
+* OS-es are still in early stages of SMP/NUMA/multiprocessor support. For example, the use of basic spinlocks in linux kernel kills the performance of application trying to use kernel structures in heavily concurrent fashion: [Spin lock killed the performance star](https://dx.doi.org/10.1109/SCCC.2015.7416588). Modern SMP OS can demonstrate a good performance for tasks with minimal sharing of data, thus promoting the popularity of shared-none models, Go language and JavaScript workers being recent examples. For this reason the most performant web-servers are single threaded event-driven ones e.g. nginx. Thus we should avoid high concurrency in kernel primitives;
+* Absence of efficient mechanism for cross-thread/cross-process synchronous call in OS is another culprit. For that reason many runtimes employ a green threads model (haskell, erlang, go) which can make a cross-thread call cost 100-200 CPU cycles instead of 5000-20000 cycles with a regular model of "wake another thread up and go to sleep". The reason for that is because kernel awakes kernel on another CPU core, schedules the awaken thread onto it, then removes the calling thread from schedule of the first kernel's core. Not only it destroys the CPU cache, but it also requires quite expensive processing in scheduler. Pinning the threads to a core can improve the performance a lot, but still the cost of context switch remains. Python can perform significant amount of work in 5-20k cycles, like many dozens of low-level function calls, thus synchronous function calls should be avoided when possible, limiting the possibilities for coordination between transactions in different threads/processes;
+* Prioritization and scheduling. As already mentioned, concurrent unrestricted conflicting modifications hurt the overall performance. Thus conflicting operations should be performed sequentially. There are no established algorithms for efficient scheduling of transactions with complex dependencies. Existing highly concurrent locking algorithms and existing schedulers are not suitable for systems with non-linear dependencies of executing units and intense volatility of those dependencies. Without priority and schedule, "spinlocking" threads would succeed faster and may completely stall slower transactions.
+
+So we need to minimize writing to shared locations and don't read the frequently modified locations; we need to enforce some order on modifications, at the same time not forcing the executing unit to be locked onto thread; locking/scheduling routines should not use OS primitives in concurrent manner and should not call other threads/processes via OS, unless waiting time is so long it can be exchanged for the serveral thousand cycles in OS. Implicit consequence of these restrictions is that we can't easily transfer (e.g. preempt) the lock/waiting status from one thread to another - those need to be transfered in a two step procedure "lock given - lock accepted".
+
+Keeping multiple versions of data could become handy, but the problem of data consistency might overweight the advantage of taking snapshots, while the complexity and overhead of multiversioning is significant.
+
+Now, the idea of the new transactional memory looks like this: the most desirable data type is a single immutable piece of memory, while mutable cells contain a single pointer to the immutable value, thus greatly simplifying the amount of changes committed into shared location; threads can read the mutable cells without locking (and without consistency guarantee); threads also can lock the cells in a non-blocking manner (strangely enough), detecting the conflict early and executing the conflicting transactions sequentially with a guaranteed right to execute a single transaction after every other conflicting transaction succeeded.
+
+Importantly, the whole system must be stable enough for one or even several executing units to crash or hang, which becomes even more probable as the amount of those units increase. Thus the transactional routines and regular python-C functions, as well as data should be separated from each other so memory corruption won't propogate into shared data. Read-only view of value might be acceptable, but writing to the shared memory should be stricktly limited.
+
+Basis for fair scheduling is a low-overhead monotonic timer, like clock_gettime(CLOCK_MONOTONIC_COARSE...), GetTickCount, or maybe some dedicated timer thread. This way we can detect the starving thread by difference between its last success time and last success of the current thread/transaction. If the thread is starving and some conflicting transaction is in progress, than the transaction shoudl be aborted and starving transaction receives the lock via "given-accepted" two step mechanism. Of course, amount of preemption and changes of order in general should be minimized.
+
+Some outline of the structures:
+
+**mutable_cell: struct**
+&nbsp;&nbsp;&nbsp;&nbsp;**{**  
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**lock:** *pointer to the thread_descriptor holding the lock to the cell, or null when the cell is unlocked*.  
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**value:** *pointer to the value or current value itself for small things like boolean or integer*;  
+(maybe) **new_value:** *similar to "value", but hold the uncommitted data*  
+&nbsp;&nbsp;&nbsp;&nbsp;**};**
+
+**thread_descriptor:** *semi-private thread structure* 
+&nbsp;&nbsp;&nbsp;&nbsp;**struct {** 
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**last_success_tick:** *keeps the value from low-overhead timer function after the last successfull commit*;  
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**first_attempt_tick:** *when the first time the thread attempted some transaction but haven't succeeded*;  
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**queue_to_thread:** *the thread that will receive the lock after current thread finishes its transaction and does mutable_cell.lock = thread_descriptor.queue_next_thread*;  
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**preempt_to_thread:** *unlike "queue_to_thread", this one will force the current thread to abort transaction in progress during the next call to transaction routines (the rest of the code is a black box, remember?);  
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**transfered_lock:** *pointer to mutable_cell.lock; transfered, but not yet accepted lock*  
+&nbsp;&nbsp;&nbsp;&nbsp;**};**
+
+Just as a regular cell, memory of thread_descriptor shall not be freed until all **contemporary transactions** finished plus all pending transfers of lock to that thread are finished (either accepted or dropped).
+
+First thread reads the mutable_cell.lock - it's free now, so it CAS-es his thread_descriptor into mutable_cell.lock. Second thread comes and sees the mutable_cell.lock taken. Next the second thread checks the thread_descriptor to read the thread_descriptor.queue_to_thread and thread_descriptor.preempt_to_thread. If both are empty, then it can queue itself for this lock. Single step queue - that's how far we can go with planning because of how non-linear dependencies are.
+
+Now if comes third thread and sees queue_to_thread or preempt_to_thread filled, than the third thread can decide to abort its transaction, queue itself instead of the current queued thread (preempt the queued thread), or change the preempt_to_thread to self due to higher priority of self.
+
+There must be some threshold for modification of queue_to_thread and preempt_to_thread so rescheduling will be minimized.
