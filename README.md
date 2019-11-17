@@ -100,7 +100,7 @@ Some outline of the structures:
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**last_success_tick:** *keeps the value from low-overhead timer function after the last successfull commit*;  
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**first_attempt_tick:** *when the first time the thread attempted some transaction but haven't succeeded*;  
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**queue_to_thread:** *the thread that will receive the lock after current thread finishes its transaction and does mutable_cell.lock = thread_descriptor.queue_next_thread*;  
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**preempt_to_thread:** *unlike "queue_to_thread", this one will force the current thread to abort transaction in progress during the next call to transaction routines (the rest of the code is a black box, remember?);*  
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**preempted:** *this one will force the current thread to abort transaction in progress during the next call of its transaction routines (the rest of transaction's code is a black box, remember?);*  
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**transfered_lock:** *pointer to mutable_cell.lock; transfered, but not yet accepted lock*  
 &nbsp;&nbsp;&nbsp;&nbsp;**};**
 
@@ -111,3 +111,22 @@ First thread reads the mutable_cell.lock - it's free now, so it CAS-es his threa
 Now if comes third thread and sees queue_to_thread or preempt_to_thread filled, than the third thread can decide to abort its transaction, queue itself instead of the current queued thread (preempt the queued thread), or change the preempt_to_thread to self due to higher priority of self.
 
 There must be some threshold for modification of queue_to_thread and preempt_to_thread so rescheduling will be minimized.
+
+This model need to work well for 3 scenarios of workload:
+* No contention. Threads simply CAS themself into lock
+* Low contention. Threads don't CAS the lock, but simply checks the lock value and proceedes into thread_descriptor to CAS the queue request (or preemption)
+* High contention. Threads don't CAS the lock neither they CAS the thread_descriptor queue field - they just wait with unknown mechanism until the lock or queue becomes available
+
+It's really desirable to never cause the contention to suddenly become higher due to transactions' internal behaviour.
+
+# Scheduling
+
+Although the only possible strict scheduling is single step long, there is a possibility for waiting threads to form an ordered queue with high priority threads in front and low priority at the back. However, due to heterogenous nature of the system (synchronous/asynchronous, fast/slow requests) it is desirable to allow inclusion of fast requests in between the slow ones. Failing to do so might cause huge drop of performance and increased contention frequency, leading to sudden drops in performance which might eventually destroy the reason to use our system. For example, this problem was encountered by Windows developers: [Anti-convoy locks in Windows Server 2003 SP1 and Windows Vista](http://joeduffyblog.com/2006/12/14/anticonvoy-locks-in-windows-server-2003-sp1-and-windows-vista/)
+
+The queue might be a double-linked list made of the thread_descriptor-s themselfs. To allow for fast requests to happen in between transaction, we can use a flag in the current owner of the lock, saying "I finished my transaction and don't need the locks, but they haven't been taken from me yet". Clearing the lock mioght be another option, but some random transaction might come along at random moment and take our lock without consulting the waiting queue.
+
+To avoid deadlocks it is necessary to make a clear distinction between running and waiting transactions. That's kinda position of the thread in the one step queue: you are either first or you belong to the whole bunch of the "second" waiting transactions in the volatile queue. If the running thread fails to acquire the lock, he moves into the second row of waiting threads.
+
+The problem of mutual locks remains, and taking them via wake up and two step "give-accept" mechanism acutally leads to a three step mechanism request-give-accept which might introduce an unacceptable delay, up to hunderds of milliseconds. The problem might be resolved by allowing the running thread to hijack any lock from waiting threads. To do that, some kind of a **flag** is required in the thread_descriptor indicating the **waiting status**, so the running thread can take the lock instantly and signal the waiting thread to **abort due to lost lock**.
+
+My first suggestion for an action after lock release/transfer is to wake up everybody. Obviously, this could lead to sudden high contention, similarly to a simple "retry transaction endlessly" tactic. Thus it's reasonable to wake up a limited amount of waiters, possibly some fixed amount of them, so the load will ramain the same no matter how many waiters are on the queue.
