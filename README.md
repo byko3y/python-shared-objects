@@ -92,7 +92,7 @@ This model might leads to a situation when a thread requiring many locks will ha
 Preemption can be implemented either by a regular queue with a small modification of a preemption flag in the thread descriptor, or by avoiding the queue using a separate preempting_thread pointer in the thread. Of course, the latter model makes it hard to assign two threads as preempting simultaneously.  
 Outline of data structures for this model:
 
-**mutable_cell: struct**
+**mutable_cell: struct**  
 &nbsp;&nbsp;&nbsp;&nbsp;**{**  
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**lock:** *pointer to the thread_descriptor holding the lock to the cell, or null when the cell is unlocked.*;  
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**lock_queue:** *single-linked list of threads that wait for the lock*;  
@@ -104,7 +104,7 @@ Outline of data structures for this model:
 &nbsp;&nbsp;&nbsp;&nbsp;**struct {**  
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**first_attempt_after_success_tick:** *when the first time the thread attempted some transaction and haven't succeeded yet with it*;  
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**preempted:** *this one will force the current thread to abort transaction in progress during the next call of its transaction routines (the rest of transaction's code is a black box, remember?);*  
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**state:** *normal operation, waiting in queue (for quick abort), quickly aborted*;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**state:** *normal operation, waiting in queue (for quick abort), quickly aborted*;  
 **};**
 
 Just as a regular cell, memory of thread_descriptor shall not be freed until all **contemporary transactions** finished plus all pending transfers of lock to that thread are finished (either accepted or dropped).
