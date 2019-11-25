@@ -99,6 +99,7 @@ Outline of data structures for this model:
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**value:** *pointer to the value or current value itself for small things like boolean or integer*;  
 (maybe) **new_value:** *similar to "value", but hold the uncommitted data*  
 &nbsp;&nbsp;&nbsp;&nbsp;**};**
+
 **thread_descriptor:** *semi-private thread structure*  
 &nbsp;&nbsp;&nbsp;&nbsp;**struct {**  
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**first_attempt_after_success_tick:** *when the first time the thread attempted some transaction and haven't succeeded yet with it*;  
