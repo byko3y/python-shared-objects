@@ -85,25 +85,26 @@ Now, the idea of the new transactional memory looks like this: the most desirabl
 
 Importantly, the whole system must be stable enough for one or even several executing units to crash or hang, which becomes even more probable as the amount of those units increase. Thus the transactional routines and regular python-C functions, as well as data should be separated from each other so memory corruption won't propogate into shared data. Read-only view of value might be acceptable, but writing to the shared memory should be stricktly limited.
 
-Basis for fair scheduling is a low-overhead monotonic timer, like clock_gettime(CLOCK_MONOTONIC_COARSE...), GetTickCount, or maybe some dedicated timer thread. This way we can detect the starving thread by difference between its last success time and last success of the current thread/transaction. If the thread is starving and some conflicting transaction is in progress, than the transaction shoudl be aborted and starving transaction receives the lock via "given-accepted" two step mechanism. Of course, amount of preemption and changes of order in general should be minimized.
+Basis for fair scheduling is a low-overhead monotonic timer, like clock_gettime(CLOCK_MONOTONIC_COARSE...), GetTickCount, or maybe some dedicated timer thread. This way we can detect the starving thread by difference between its last success time and last success of the current thread/transaction. If the thread is starving and some conflicting transaction is in progress, than the transaction should be aborted and starving transaction receives the lock via "given-accepted" two step mechanism. Of course, amount of preemption and changes of order in general should be minimized.
 
-Some outline of the structures:
+Some update: after analyzing the scenario of complex contentions on several lock, I realized that good queueing with minimal amount of unnecessary locking can be implemented using separate queues for every lock. Every thread can wait for a single lock, so the thread descriptor can be used as a queue item. It's important to ensure the thread belongs to a single queue and no thread from other queue waits for him.  
+This model might leads to a situation when a thread requiring many locks will have to queue itself many times, leading to a significant delay for threads waiting for the first locks that the heavy-locking thread have acquired. BTW, because the heavy-locking thread started earlier, it will not be preempted. For this reason it might be viable to give a heavy-locking thread preference in queue position.  
+Preemption can be implemented either by a regular queue with a small modification of a preemption flag in the thread descriptor, or by avoiding the queue using a separate preempting_thread pointer in the thread. Of course, the latter model makes it hard to assign two threads as preempting simultaneously.  
+Outline of data structures for this model:
 
 **mutable_cell: struct**
 &nbsp;&nbsp;&nbsp;&nbsp;**{**  
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**lock:** *pointer to the thread_descriptor holding the lock to the cell, or null when the cell is unlocked*.  
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**lock:** *pointer to the thread_descriptor holding the lock to the cell, or null when the cell is unlocked.*;  
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**lock_queue:** *single-linked list of threads that wait for the lock*;  
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**value:** *pointer to the value or current value itself for small things like boolean or integer*;  
 (maybe) **new_value:** *similar to "value", but hold the uncommitted data*  
 &nbsp;&nbsp;&nbsp;&nbsp;**};**
-
 **thread_descriptor:** *semi-private thread structure*  
 &nbsp;&nbsp;&nbsp;&nbsp;**struct {**  
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**last_success_tick:** *keeps the value from low-overhead timer function after the last successfull commit*;  
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**first_attempt_tick:** *when the first time the thread attempted some transaction but haven't succeeded*;  
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**queue_to_thread:** *the thread that will receive the lock after current thread finishes its transaction and does mutable_cell.lock = thread_descriptor.queue_next_thread*;  
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**first_attempt_after_success_tick:** *when the first time the thread attempted some transaction and haven't succeeded yet with it*;  
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**preempted:** *this one will force the current thread to abort transaction in progress during the next call of its transaction routines (the rest of transaction's code is a black box, remember?);*  
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**transfered_lock:** *pointer to mutable_cell.lock; transfered, but not yet accepted lock*  
-&nbsp;&nbsp;&nbsp;&nbsp;**};**
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;**state:** *normal operation, waiting in queue (for quick abort), quickly aborted*;
+**};**
 
 Just as a regular cell, memory of thread_descriptor shall not be freed until all **contemporary transactions** finished plus all pending transfers of lock to that thread are finished (either accepted or dropped).
 
@@ -126,9 +127,9 @@ Although the only possible strict scheduling is single step long, there is a pos
 
 The queue might be a double-linked list made of the thread_descriptor-s themselfs. To allow for fast requests to happen in between transaction, we can use a flag in the current owner of the lock, saying "I finished my transaction and don't need the locks, but they haven't been taken from me yet". Clearing the lock mioght be another option, but some random transaction might come along at random moment and take our lock without consulting the waiting queue.
 
-To avoid deadlocks it is necessary to make a clear distinction between running and waiting transactions. That's kinda position of the thread in the one step queue: you are either first or you belong to the whole bunch of the "second" waiting transactions in the volatile queue. If the running thread fails to acquire the lock, he moves into the second row of waiting threads.
+To avoid deadlocks it is necessary to make a clean distinction between running and waiting transactions. That's kinda position of the thread in the one step queue: you are either first or you belong to the whole bunch of the "second" waiting transactions in the volatile queue. If the running thread fails to acquire the lock, he moves into the second row of waiting threads.
 
-The problem of mutual locks remains, and taking them via wake up and two step "give-accept" mechanism acutally leads to a three step mechanism request-give-accept which might introduce an unacceptable delay, up to hunderds of milliseconds. The problem might be resolved by allowing the running thread to hijack any lock from waiting threads. To do that, some kind of a **flag** is required in the thread_descriptor indicating the **waiting status**, so the running thread can take the lock instantly and signal the waiting thread to **abort due to lost lock**.
+The problem of mutual locks remains, and taking them via wake up and two step "give-accept" mechanism acutally leads to a three step mechanism request-give-accept which might introduce an unacceptable delay, up to hunderds of milliseconds. The problem might be resolved by allowing the running thread to hijack any lock from waiting threads. To do that, some kind of a **flag** is required in the thread_descriptor indicating the **waiting status**, so the running thread can take the lock instantly and signal the waiting thread to **abort due to lost lock**. This also implies all the **transaction data shall be releasable from outside**.
 
 My first suggestion for an action after lock release/transfer is to wake up everybody. Obviously, this could lead to sudden high contention, similarly to a simple "retry transaction endlessly" tactic. Thus it's reasonable to wake up a limited amount of waiters, possibly some fixed amount of them, so the load will ramain the same no matter how many waiters are on the queue.
 
@@ -143,3 +144,9 @@ Still there remains a problem of some crazy code trying to write into completely
 * Always clear local direct references in local variables i.e. pointers in the stack
 * Try to move the shared mappings as far as possible from the other application data. Much easier to implement in 64-bit space
 * Direct reading/writing of large values with outside code might be benificial, although has to be reduced as much as possible
+
+# Asynchronous and synchronous calls
+ 
+Obviously, not all the operations are performed independently on shared memory. Some algorithms will require one thread to coordinate with another thread, and even wait for completion of the processing. Some external library could have been used for that purpose, but that implies some additional mean of data transfer through that library. We already have our own means of data transfer, so we want to reuse them as closely as possible. Also, anyway we need to implement the thread scheduling with waiting which requires some kind of signaling. Moreover, it could be advantageous to make the scheduler aware of custom signals for asynchronous processing.
+
+The common implementation is a mix of waiting in userspace and kernel (similar to futex and windows critical section), with flag in a shared memory as a fast fundamental mechanism and an auxiliary kernel object for long waits. The last one can be shared for several condition flags, so we won't need to create multiple kernel objects and wait on all of them.
