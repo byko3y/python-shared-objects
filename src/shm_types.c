@@ -23,7 +23,7 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "assert.h"
+// #include "assert.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -828,7 +828,7 @@ shm_queue_append_do(ThreadContext *thread, QueueRef queue, ShmPointer value, Cel
 
 		if (tail.local)
 		{
-			assert( ! shm_pointer_is_valid(tail.local->next));
+			shmassert( ! shm_pointer_is_valid(tail.local->next));
 			shm_queue_changes_push(thread, queue, tail);
 			shm_pointer_empty(thread, &tail.local->new_next);
 			tail.local->new_next = rslt->shared; // ensure the tail does not point to unlinked item before becoming visible
@@ -1204,7 +1204,7 @@ shm_list_get_block(int block_index, ShmListIndex *list_index, ShmListBlockRef fi
 	ShmListBlockRef result;
 	if (NULL == list_index)
 	{
-		assert(block_index == 0);
+		shmassert(block_index == 0);
 		return first_block;
 	}
 
@@ -2497,7 +2497,7 @@ find_nested(ShmDictElementArray *array, ShmPointer array_shm, uint32_t mask, uin
 {
 	if (array == NULL) return NULL;
 	ShmDictElement *elements = &array->first;
-	assert(level < (sizeof(uint32_t) * 8 - DICT_LEVEL_BITS - 1) / DICT_LEVEL_BITS);
+	shmassert(level < (sizeof(uint32_t) * 8 - DICT_LEVEL_BITS - 1) / DICT_LEVEL_BITS);
 	uint32_t level_mult = 1 << (level*DICT_LEVEL_BITS);
 	uint32_t prev_levels_mask = level_mult - 1;
 	uint32_t all_levels_mask = (level_mult << DICT_LEVEL_BITS) - 1;
@@ -2553,7 +2553,7 @@ ShmDictElement *
 shm_dict_do_find(ShmDictElementArray *root, ShmPointer root_shm, DictFindData *find_data, PShmPointer result_shm)
 {
 	uint32_t mask = ~((1 << DICT_LEVEL_BITS) - 1); // FFFFFFF8 for DICT_LEVEL_SIZE = 8
-	assert(false);
+	shmassert(false);
 	return find_nested(root, root_shm, mask, 0, find_data, result_shm);
 }
 

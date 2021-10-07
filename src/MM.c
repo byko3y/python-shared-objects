@@ -239,7 +239,7 @@ alloc_sector(ShmHeap *heap, ShmHeapSectorHeader **newblock, ShmPointer *newblock
 	int newindex = -1;
 	// relies on outer lock to ensure uninitialized shared memory block will not become visible and multiple thread won't overallocate redundant blocks on contention.
 	int err = superblock_alloc_more(heap->thread, SHM_BLOCK_TYPE_THREAD_SECTOR, &newindex, -2);
-	assert(err != RESULT_FAILURE);
+	shmassert(err != RESULT_FAILURE);
 	if (err == RESULT_REPEAT)
 		return err;
 	shmassert(newindex >= 0);
@@ -1335,7 +1335,7 @@ free_mem(ThreadContext *thread, ShmPointer shm_pointer, int size)
 			shmassert(size <= max_heap_small_block_size);
 			shmassert(data->size > 0);
 			shmassert(data->size <= max_heap_small_block_size);
-			assert(data->size < 64 * 1024);
+			shmassert(data->size < 64 * 1024);
 			shmassert(*(uint32_t*)((intptr_t)data + data->size) == guard_bytes);
 		}
 		shmassert(block_get_segment((ShmHeapBlockHeader *)data)->base.type == SHM_BLOCK_TYPE_THREAD_SECTOR ||

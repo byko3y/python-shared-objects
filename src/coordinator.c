@@ -23,7 +23,7 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include <assert.h>
+// #include <assert.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include "shm_types.h"
@@ -35,7 +35,7 @@ static bool inited = false;
 void
 init_coordinator(void)
 {
-	assert(!inited);
+	shmassert(!inited);
 	// p_libsys_init();
 	p_uthread_init();
 	inited = true;
@@ -331,13 +331,14 @@ shm_keeper_thread(void *thread)
 void
 start_coordinator(void)
 {
-	assert(inited);
+	shmassert(inited);
 	if (!p_atomic_int_compare_and_exchange(&superblock->coordinator_data.taken, 0, 1))
 		shmassert_msg(false, "reclaimer is already running");
 	reclaimer_thread = p_uthread_create(shm_reclaimer_thread, NULL, true);
 	// p_uthread_create_full(shm_buffer_test_read_thread, NULL, true, P_UTHREAD_PRIORITY_HIGH, 0, NULL);
 
-	// keeper_thread = p_uthread_create(shm_keeper_thread, NULL, true);
+	if (false)
+		keeper_thread = p_uthread_create(shm_keeper_thread, NULL, true);
 }
 
 void

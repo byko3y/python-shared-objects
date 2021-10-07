@@ -33,7 +33,7 @@ void _make_filename(char *buf)
 	// Create a random filename for the shared memory object.
 	// number of random bytes to use for name
 	int nbytes = (SHM_SAFE_NAME_LENGTH - sizeof SHM_NAME_PREFIX);
-	assert(nbytes >= 2); // '_SHM_NAME_PREFIX too long'
+	shmassert(nbytes >= 2); // '_SHM_NAME_PREFIX too long'
 	strcpy_s(buf, SHM_SAFE_NAME_LENGTH, SHM_NAME_PREFIX);
 	for (int i = 0; i<nbytes; ++i)
 		buf[isizeof(SHM_NAME_PREFIX) + i - 1] = "01234567890ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz+_"[(unsigned int)rand() % 64];
@@ -1412,7 +1412,7 @@ thread_unregister_last_lock(ThreadContext *thread, ShmTransactionElement *elemen
 int
 transaction_lock_read(ThreadContext *thread, ShmLock *lock, ShmPointer container_shm, int container_type, bool *lock_taken)
 {
-	assert(thread != NULL);
+	shmassert(thread != NULL);
 	shmassert_msg(thread->transaction_mode != TRANSACTION_NONE, "thread->transaction_mode != TRANSACTION_NONE");
 	shmassert_msg(thread->transaction_mode != TRANSACTION_TRANSIENT, "previous transient transaction is not finished correctly");
 	if (thread->transaction_mode == TRANSACTION_IDLE)
@@ -1594,7 +1594,7 @@ int last_take_write_lock_result = 0;
 int
 transaction_lock_write(ThreadContext *thread, ShmLock *lock, ShmPointer lock_shm, int container_type, bool *lock_taken)
 {
-	assert(thread != NULL);
+	shmassert(thread != NULL);
 	shmassert_msg(thread->transaction_mode != TRANSACTION_NONE, "thread->transaction_mode != TRANSACTION_NONE");
 	shmassert_msg(thread->transaction_mode != TRANSACTION_TRANSIENT, "previous transient transaction is not finished correctly");
 	if (thread->transaction_mode == TRANSACTION_IDLE)
@@ -1796,7 +1796,7 @@ int
 transaction_unlock_local(ThreadContext *thread, ShmLock *lock, ShmPointer lock_shm, int status, bool lock_taken)
 {
 	return RESULT_OK;
-	assert(thread->transaction_mode != LOCKING_NONE);
+	shmassert(thread->transaction_mode != LOCKING_NONE);
 	if ( ! lock_taken)
 		return RESULT_OK;
 	if (thread->transaction_mode == TRANSACTION_TRANSIENT)
@@ -2682,7 +2682,7 @@ shm_pointer_refcount(ThreadContext *thread, ShmPointer pointer)
 LocalReference *
 thread_local_ref(ThreadContext *thread, ShmPointer pointer)
 {
-	assert((thread->local_vars->count < LOCAL_REFERENCE_BLOCK_SIZE));
+	shmassert((thread->local_vars->count < LOCAL_REFERENCE_BLOCK_SIZE));
 	//thread_local.local_references[thread_local.last_free_local_ref] = pointer;
 	//thread_local.last_free_local_ref ++ ;
 	//return &thread_local.local_references[thread_local.last_free_local_ref];
@@ -2701,12 +2701,12 @@ thread_local_ref(ThreadContext *thread, ShmPointer pointer)
 void
 thread_local_clear_ref(ThreadContext *thread, LocalReference *reference)
 {
-	assert((char*)&thread->local_vars->references[0] <= (char*)reference &&
+	shmassert((char*)&thread->local_vars->references[0] <= (char*)reference &&
 		(char*)reference <= (char*)&thread->local_vars->references[LOCAL_REFERENCE_BLOCK_SIZE]
 	);
 	// more strict assertion
-	assert(thread->local_vars->count > 0);
-	assert( (char*)reference <= (char*)&thread->local_vars->references[thread->local_vars->count - 1]
+	shmassert(thread->local_vars->count > 0);
+	shmassert( (char*)reference <= (char*)&thread->local_vars->references[thread->local_vars->count - 1]
 	);
 	//if (thread_local.last_free_local_ref > 0 && &thread_local.local_references[thread_local.last_free_local_ref - 1] == pointer)
 	//	thread_local.last_free_local_ref--;

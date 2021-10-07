@@ -28,7 +28,7 @@
 // #include "windows.h"
 #include <stdint.h>
 #include <stdbool.h>
-#include <assert.h>
+// #include <assert.h>
 // #include <plibsys.h>
 // I'm getting problems with plibsys.h because something is including both winsock.h and winsock2.h.
 #define PLIBSYS_H_INSIDE
@@ -171,7 +171,7 @@ Sleep(unsigned int msec) {
 } while (0);
 
 #define release_spinlock(lock, new_value, compare_value)    do { \
-	assert(*lock = compare_value); \
+	shmassert(*lock = compare_value); \
 	p_atomic_int_set(lock, new_value); \
 } while (0);
 
