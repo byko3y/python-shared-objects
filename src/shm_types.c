@@ -168,41 +168,41 @@ shm_types_transaction_unlock(ThreadContext *thread, ShmTransactionElement *eleme
 	{
 		CellRef cell;
 		init_cell_ref(element->container, &cell);
-		shm_cell_unlock(thread, cell.local, element->type);
+		shm_cell_unlock(thread, cell.local, element->element_type);
 		break;
 	}
 	case CONTAINER_QUEUE:
 	{
 		QueueRef queue;
 		init_queue_ref(element->container, &queue);
-		shm_queue_unlock(thread, queue.local, element->type);
+		shm_queue_unlock(thread, queue.local, element->element_type);
 		break;
 	}
 	case CONTAINER_LIST:
 	{
 		ListRef list;
 		init_list_ref(element->container, &list);
-		shm_list_unlock(thread, list.local, element->type);
+		shm_list_unlock(thread, list.local, element->element_type);
 		break;
 	}
 	case CONTAINER_DICT_DELTA:
 	{
 		DictRef dict;
 		init_dict_ref(element->container, &dict);
-		shm_dict_unlock(thread, dict.local, element->type);
+		shm_dict_unlock(thread, dict.local, element->element_type);
 		break;
 	}
 	case CONTAINER_UNORDERED_DICT:
 	{
 		UnDictRef undict;
 		init_undict_ref(element->container, &undict);
-		shm_undict_unlock(thread, undict.local, element->type);
+		shm_undict_unlock(thread, undict.local, element->element_type);
 		break;
 	}
 	case CONTAINER_PROMISE:
 	{
 		ShmPromise *promise = LOCAL(element->container);
-		shm_promise_unlock(thread, promise, element->type);
+		shm_promise_unlock(thread, promise, element->element_type);
 		break;
 	}
 	default:
@@ -317,6 +317,9 @@ init_container(ShmContainer *cell, ShmInt size, ShmInt type)
 	cell->lock.release_line = __LINE__;
 	cell->lock.writers_count = 0;
 	cell->lock.readers_count = 0;
+	cell->lock.read_contention_count = 0;
+	cell->lock.write_contention_count = 0;
+	cell->lock.break_on_contention = 0;
 }
 
 ////////////////////////////////////  Queue  ///////////////////////
@@ -1221,6 +1224,33 @@ shm_list_get_block(int block_index, ShmListIndex *list_index, ShmListBlockRef fi
 	return result;
 }
 
+void
+shm_list_init_cell(ShmListCell *new_cell, ShmPointer container_shm)
+{
+	memclear(new_cell, sizeof(ShmListCell));
+	// ShmContainedBlock
+	new_cell->type = SHM_TYPE_LIST_CELL;
+	new_cell->size = sizeof(ShmListCell);
+	new_cell->container = container_shm;
+	// ShmCellBase
+	new_cell->data = EMPTY_SHM;
+	new_cell->has_new_data = false;
+	new_cell->new_data = EMPTY_SHM;
+	// ShmListCell
+	new_cell->changed = false;
+}
+
+void
+shm_list_validate_cell(ShmListCell *cell, ShmPointer container_shm)
+{
+	// ShmContainedBlock
+	shmassert(cell->type == SHM_TYPE_LIST_CELL);
+	shmassert(cell->size == sizeof(ShmListCell));
+	shmassert(cell->container == container_shm);
+	if (cell->has_new_data == false)
+		shmassert(cell->new_data == EMPTY_SHM);
+}
+
 typedef struct {
 	ShmListIndex *index;
 	ShmListIndexItem *cell;
@@ -1307,7 +1337,8 @@ shm_list_get_item_desc(ThreadContext *thread, ListRef list, ShmInt itemindex, bo
 	ShmListIndexItem *index_item = NULL;
 	ShmListBlockRef block = shm_list_get_block(target_block_index, list_index, first_block, &index_item);
 
-	if (index_desc) {
+	if (index_desc)
+	{
 		index_desc->index = list_index;
 		index_desc->cell = index_item;
 		index_desc->cell_ii = target_block_index;
@@ -1324,6 +1355,7 @@ int
 shm_list_get_item_do(ThreadContext *thread, ListRef list, ShmInt index, ShmPointer *result, bool acquire)
 {
 	*result = EMPTY_SHM;
+	shmassert(index >= 0);
 	if_failure(
 		transaction_lock_read(thread, &list.local->base.lock, list.shared, CONTAINER_LIST, NULL),
 		{
@@ -1412,6 +1444,7 @@ shm_list_set_item_raw(ThreadContext *thread, ListRef list, ShmInt index, ShmPoin
 
 	ShmListCell *cell = NULL;
 	cell = &block_desc.block->cells[block_desc.itemindex];
+	shm_list_validate_cell(cell, list.shared);
 	if (cell)
 	{
 		if (!consume)
@@ -1426,6 +1459,7 @@ int
 shm_list_set_item_do(ThreadContext *thread, ListRef list, ShmInt index, ShmPointer value, bool consume)
 {
 	shm_list_changes_check_inited(thread, list.local, NULL);
+	shmassert(index >= 0);
 	if_failure(
 		transaction_lock_write(thread, &list.local->base.lock, list.shared, CONTAINER_LIST, NULL),
 		{
@@ -1448,7 +1482,8 @@ shm_list_set_item_do(ThreadContext *thread, ListRef list, ShmInt index, ShmPoint
 		return RESULT_INVALID;
 	}
 
-	shm_list__block_desc block_desc = shm_list_get_item_desc(thread, list, index, owned, NULL);
+	shm_list__index_desc index_desc;
+	shm_list__block_desc block_desc = shm_list_get_item_desc(thread, list, index, owned, &index_desc);
 	shmassert(block_desc.block);
 
 	ShmListCounts cnts = shm_list_block_get_count(block_desc.block, owned);
@@ -1464,6 +1499,7 @@ shm_list_set_item_do(ThreadContext *thread, ListRef list, ShmInt index, ShmPoint
 
 	ShmListCell *cell = NULL;
 	cell = &block_desc.block->cells[block_desc.itemindex];
+	shm_list_validate_cell(cell, list.shared);
 	if (cell)
 	{
 		if (cell->has_new_data && shm_pointer_is_valid(cell->new_data))
@@ -1471,8 +1507,10 @@ shm_list_set_item_do(ThreadContext *thread, ListRef list, ShmInt index, ShmPoint
 		if (!consume)
 			shm_pointer_acq(thread, value);
 		shm_pointer_move(thread, &cell->new_data, &value);
-		cell->new_data = true;
+		cell->has_new_data = true;
 	}
+
+	shm_list_changes_push(thread, list.local, block_desc.block, index_desc.cell_ii, ii);
 	transient_commit(thread);
 	return RESULT_OK;
 }
@@ -1590,22 +1628,6 @@ shm_list_new_block(ThreadContext *thread, ShmList *list, ShmPointer *result_shm,
 	return rslt;
 }
 
-void
-shm_list_init_cell(ShmListCell *new_cell, ShmPointer container_shm)
-{
-	memclear(new_cell, sizeof(ShmListCell));
-	// ShmContainedBlock
-	new_cell->type = SHM_TYPE_LIST_CELL;
-	new_cell->size = sizeof(ShmListCell);
-	new_cell->container = container_shm;
-	// ShmCellBase
-	new_cell->data = EMPTY_SHM;
-	new_cell->has_new_data = false;
-	new_cell->new_data = EMPTY_SHM;
-	// ShmListCell
-	new_cell->changed = false;
-}
-
 // 64k / 28 = 2300 max elements in the single block.
 // 512k / 12 = 24k max blocks in index.
 // 2.3k * 24k = 55M max elements, 1500 Mb of memory.
@@ -1624,12 +1646,12 @@ shm_list_max_block_capacity()
 }
 
 ShmList *
-new_shm_list_with_capacity(ThreadContext *thread, PShmPointer result, ShmInt capacity)
+new_shm_list_with_capacity(ThreadContext *thread, PShmPointer result, ShmInt total_capacity)
 {
 	ShmList *list = new_shm_list(thread, result);
 	shmassert(list->inited == false);
-	int full_blocks_count = capacity / shm_list_max_block_capacity();
-	int last_block_count = capacity % shm_list_max_block_capacity();
+	int full_blocks_count = total_capacity / shm_list_max_block_capacity();
+	int last_block_count = total_capacity % shm_list_max_block_capacity();
 	int index_capacity = last_block_count == 0 ? full_blocks_count : full_blocks_count + 1;
 	shmassert(index_capacity >= 0 && index_capacity < shm_list_max_index_size());
 	if (index_capacity > 1)
@@ -1654,22 +1676,26 @@ new_shm_list_with_capacity(ThreadContext *thread, PShmPointer result, ShmInt cap
 			ShmListBlock *block = shm_list_new_block(thread, list, &block_shm,
 			                                         block_capacity, SHM_LIST_BLOCK_DEBUG_ID);
 			block->count = block_count;
+			for (int bi = 0; bi < block_count; bi++)
+				shm_list_init_cell(&block->cells[bi], *result);
 		}
 		shm_pointer_move(thread, &list->top_block, &new_index_shm);
-		list->count = capacity;
+		list->count = total_capacity;
 	}
 	else
-    {
-        ShmPointer top_block_shm = EMPTY_SHM;
-        int top_block_capacity = last_block_count >= 8 ? last_block_count : 8;
-        ShmListBlock *top_block = shm_list_new_block(thread, list, &top_block_shm,
-                                                     top_block_capacity, SHM_LIST_BLOCK_DEBUG_ID);
-        top_block->count = last_block_count;
-        shm_pointer_move(thread, &list->top_block, &top_block_shm);
-        list->count = capacity;
-    }
-    list->inited = true;
-    return list;
+	{
+		ShmPointer top_block_shm = EMPTY_SHM;
+		int top_block_capacity = last_block_count >= 8 ? last_block_count : 8;
+		ShmListBlock *top_block = shm_list_new_block(thread, list, &top_block_shm,
+		                                             top_block_capacity, SHM_LIST_BLOCK_DEBUG_ID);
+		top_block->count = last_block_count;
+		shm_pointer_move(thread, &list->top_block, &top_block_shm);
+		list->count = total_capacity;
+		for (int bi = 0; bi < total_capacity; bi++)
+			shm_list_init_cell(&top_block->cells[bi], *result);
+	}
+	list->inited = true;
+	return list;
 }
 
 static int shm_list_append_do__old_count;
@@ -1903,6 +1929,7 @@ shm_list_append_do(ThreadContext *thread, ListRef list, ShmPointer value, bool c
 		shmassert(idx < tail_block->capacity);
 		ShmListCell *new_cell = &tail_block->cells[idx];
 		shm_list_init_cell(new_cell, list.shared);
+		shm_list_validate_cell(new_cell, list.shared);
 
 		// update cell
 		if (!consume && SBOOL(value))
@@ -1997,6 +2024,7 @@ shm_list_popleft(ThreadContext *thread, ListRef list, ShmPointer *result)
 	shmassert(ii >= 0 && ii < block_desc.block->capacity);
 
 	ShmListCell *cell = &block_desc.block->cells[ii];
+	shm_list_validate_cell(cell, list.shared);
 	// Update cell
 	// shm_pointer_empty(thread, &cell->new_data);
 	if (cell->has_new_data)
@@ -3907,6 +3935,8 @@ shm_undict_get_count(ThreadContext *thread, UnDictRef dict, ShmInt *rslt)
 	return _shm_undict_get_count(thread, dict, rslt, true);
 }
 
+int shm_undict_get__last_status = -1;
+
 int
 shm_undict_get_do(ThreadContext *thread, UnDictRef dict, ShmUnDictKey *key, ShmPointer *value, bool acquire)
 {
@@ -3914,6 +3944,7 @@ shm_undict_get_do(ThreadContext *thread, UnDictRef dict, ShmUnDictKey *key, ShmP
 	shmassert(*value == EMPTY_SHM);
 	if_failure(transaction_lock_read(thread, &dict.local->lock, dict.shared, CONTAINER_UNORDERED_DICT, NULL),
 	{
+		shm_undict_get__last_status = status;
 		transient_abort(thread);
 		return status;
 	});

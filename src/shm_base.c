@@ -98,6 +98,65 @@ superblock_get_block_noside(int index)
 	return superblock_mmap[group_index] + itemindex * SHM_FIXED_CHUNK_SIZE;
 }
 
+#define thread_debug_register_line() do {\
+	self->private_data->last_writer_lock = lock->writer_lock; \
+	self->private_data->last_writer_lock_pntr = lock; \
+	self->private_data->last_operation = __LINE__; \
+} while (0);
+
+void
+update_tickets(ThreadContext *thread, vl ShmInt *cell)
+{
+	ShmInt ticket = superblock->ticket;
+	*cell += ticket - thread->private_data->last_known_ticket;
+	thread->private_data->last_known_ticket = ticket;
+}
+
+#define thread_debug_register_result(times_var, tickets_var) do {\
+	self->private_data->times_var++; \
+	update_tickets(self, &self->private_data->tickets_var); \
+	self->private_data->last_writer_lock = lock->writer_lock; \
+	self->private_data->last_writer_lock_pntr = lock; \
+	self->private_data->last_operation = __LINE__; \
+} while (0);
+
+#define thread_debug_register_read_result(times_var, tickets_var, result) do {\
+	self->private_data->times_var++; \
+	update_tickets(self, &self->private_data->tickets_var); \
+	self->private_data->last_read_operation = __LINE__; \
+	self->private_data->last_read_rslt = result; \
+} while (0)
+
+void
+register_write_contention(ShmLock *lock)
+{
+	p_atomic_int_add(&lock->write_contention_count, 1);
+	// if (lock->write_contention_count > 50)
+	// 	DebugPauseAll();
+	if (lock->break_on_contention)
+		DebugPauseAll();
+}
+
+void
+register_read_contention(ShmLock *lock, ShmPointer thread_shm)
+{
+	p_atomic_int_add(&lock->read_contention_count, 1);
+	// if (lock->read_contention_count > 500)
+	// {
+	// }
+	if (lock->break_on_contention || debug_stop_on_contention)
+	{
+		// debug
+		ThreadContext *thread = LOCAL(thread_shm);
+		ThreadContext snapshot = *thread;
+		ThreadContextPrivate *private = LOCAL(snapshot.private_data_shm);
+		ThreadContextPrivate private_snapshot = *private;
+		SHM_UNUSED(snapshot);
+		SHM_UNUSED(private_snapshot);
+		fprintf(stderr, "%d. read contention\n", ShmGetCurrentThreadId());
+		DebugPauseAll();
+	}
+}
 void
 lock_taken(ThreadContext *self, ShmLock *lock, ShmPointer shm_lock)
 {
@@ -177,7 +236,7 @@ shm_pointer_to_thread(ShmPointer value)
 	ThreadContext *thread = LOCAL(value);
 	shmassert(thread->self == value);
 	shmassert(thread->magic == SHM_THREAD_MAGIC);
-	shmassert(thread->index >= 0 && thread->index < isizeof(ShmReaderBitmap));
+	shmassert(thread->index >= 0 && thread->index < isizeof(ShmReaderBitmap) * 8);
 	return thread;
 }
 
@@ -186,7 +245,12 @@ take_read_lock__checks(ThreadContext *self, ShmLock *lock, ShmPointer next_write
 	ShmInt *oldest_writer_out, bool *lock_is_mine_out)
 {
 	if (SBOOL(p_atomic_shm_pointer_get(&self->thread_preempted)))
+	{
+		thread_debug_register_read_result(times_read_preempted, tickets_read_preempted, RESULT_PREEMPTED);
+		// thread_preempted almost never caused by this lock
+		// register_read_contention(lock);
 		return RESULT_PREEMPTED;
+	}
 
 	bool the_lock_is_mine = false;
 	if (writer_lock == self->self)
@@ -196,7 +260,7 @@ take_read_lock__checks(ThreadContext *self, ShmLock *lock, ShmPointer next_write
 	}
 	if (lock_is_mine_out) *lock_is_mine_out = the_lock_is_mine;
 
-	shmassert(self->index >= 0 && self->index < isizeof(ShmReaderBitmap));
+	shmassert(self->index >= 0 && self->index < isizeof(ShmReaderBitmap) * 8);
 	if ((atomic_bitmap_get(&lock->reader_lock) & atomic_bitmap_thread_mask(self->index)) &&
 	(SBOOL(writer_lock) == false || the_lock_is_mine))
 	{
@@ -205,6 +269,7 @@ take_read_lock__checks(ThreadContext *self, ShmLock *lock, ShmPointer next_write
 
 	shmassert(self->last_start != 0);
 	ShmInt oldest_writer = 0;
+	ShmPointer oldest_thread = EMPTY_SHM;
 	if (SBOOL(writer_lock))
 	{
 		ThreadContext *that_thread = shm_pointer_to_thread(writer_lock);
@@ -217,16 +282,19 @@ take_read_lock__checks(ThreadContext *self, ShmLock *lock, ShmPointer next_write
 				if (oldest_writer == 0)
 				{
 					oldest_writer = that_thread_start;
+					oldest_thread = writer_lock;
 				}
 				else if (shm_thread_start_compare(oldest_writer, that_thread_start) == COMPARED_LOW_HIGH)
 				{
 					oldest_writer = that_thread_start;
+					oldest_thread = writer_lock;
 				}
 			}
 		}
 	}
 	// ShmPointer next_writer = p_atomic_shm_pointer_get(&lock->next_writer);
 	// shmassert(next_writer != self->self);
+	bool oldest_is_next_writer = false;
 	if (!the_lock_is_mine && SBOOL(next_writer))
 	{
 		ThreadContext *that_thread = shm_pointer_to_thread(next_writer);
@@ -238,11 +306,15 @@ take_read_lock__checks(ThreadContext *self, ShmLock *lock, ShmPointer next_write
 			{
 				if (oldest_writer == 0)
 				{
+					oldest_is_next_writer = true;
 					oldest_writer = that_thread_start;
+					oldest_thread = next_writer;
 				}
 				else if (shm_thread_start_compare(oldest_writer, that_thread_start) == COMPARED_LOW_HIGH)
 				{
+					oldest_is_next_writer = true;
 					oldest_writer = that_thread_start;
+					oldest_thread = next_writer;
 				}
 			}
 		}
@@ -253,7 +325,14 @@ take_read_lock__checks(ThreadContext *self, ShmLock *lock, ShmPointer next_write
 	{
 		if (shm_thread_start_compare(self->last_start, oldest_writer) == COMPARED_LOW_HIGH)
 		{
-			self->private_data->times_aborted++;
+			if (oldest_is_next_writer)
+			{
+				thread_debug_register_read_result(times_read_preempted3, tickets_read_preempted3, RESULT_PREEMPTED);
+			}
+			else
+				thread_debug_register_read_result(times_read_preempted2, tickets_read_preempted2, RESULT_PREEMPTED);
+
+			register_read_contention(lock, oldest_thread);
 			return RESULT_PREEMPTED;
 		}
 	}
@@ -271,7 +350,10 @@ take_read_lock(ThreadContext *self, ShmLock *lock, ShmPointer shm_lock, bool *lo
 	bool the_lock_is_mine = false;
 	int check_result = take_read_lock__checks(self, lock, next_writer, writer_lock, &oldest_writer, &the_lock_is_mine);
 	if (check_result != RESULT_INVALID)
+	{
+		self->private_data->last_known_ticket = p_atomic_int_get(&superblock->ticket);
 		return check_result;
+	}
 	// not preempted and there are no higher priority writers.
 
 	// before preempting writers we need to publish our lock so other writers will not try to get writer lock again.
@@ -306,17 +388,26 @@ take_read_lock(ThreadContext *self, ShmLock *lock, ShmPointer shm_lock, bool *lo
 					shm_event_signal(&that_thread->ready);
 				}
 				else
+				{
+					thread_debug_register_read_result(times_read_repeated, tickets_read_repeated, RESULT_REPEAT);
 					return RESULT_REPEAT;
+				}
 			}
 			else if (SBOOL(p_atomic_shm_pointer_get(&lock->next_writer)))
+			{
+				thread_debug_register_read_result(times_read_repeated, tickets_read_repeated, RESULT_REPEAT);
 				return RESULT_REPEAT;
+			}
 
 			ShmPointer writer_lock_2 = p_atomic_shm_pointer_get(&lock->writer_lock);
 			if (writer_lock_2 == self->self)
 				writer_lock_2 = LOCK_UNLOCKED;
 
 			if (writer_lock_2 != writer_lock) // we compare the field with value at the start of the function because the whole function takes short time to complete
+			{
+				thread_debug_register_read_result(times_read_repeated, tickets_read_repeated, RESULT_REPEAT);
 				return RESULT_REPEAT;
+			}
 			if (SBOOL(writer_lock))
 			{
 				// writer_lock cannot be modified that easily. We need to wait for writer to willingly release the lock.
@@ -327,25 +418,30 @@ take_read_lock(ThreadContext *self, ShmLock *lock, ShmPointer shm_lock, bool *lo
 				contended = true;
 			}
 			else if (SBOOL(writer_lock_2))
+			{
+				thread_debug_register_read_result(times_read_repeated, tickets_read_repeated, RESULT_REPEAT);
 				return RESULT_REPEAT;
+			}
 
 			if (contended)
 			{
-				self->private_data->times_waiting++;
-				if (can_signal_back)
-					return RESULT_WAIT_SIGNAL;
-				else
-					return RESULT_WAIT;
+				// self->private_data->times_waiting++;
+				int rslt = can_signal_back ? RESULT_WAIT_SIGNAL : RESULT_WAIT;
+				thread_debug_register_read_result(times_read_waited, tickets_read_waited, rslt);
+				return rslt;
 			}
 		}
 		else if (SBOOL(p_atomic_shm_pointer_get(&lock->writer_lock)))
 		{
 			// There suddenly appeared a new writer_lock right before we published our read lock.
 			// It's okay to have conflicting reader and writer lock active, but we cannot use our read lock unless we are sure nobody's using the writer lock and vice versa
+			thread_debug_register_read_result(times_read_repeated, tickets_read_repeated, RESULT_REPEAT);
 			return RESULT_REPEAT;
 		}
 	}
 
+	self->private_data->last_read_rslt = RESULT_OK;
+	self->private_data->last_known_ticket = p_atomic_int_get(&superblock->ticket);
 	return RESULT_OK;
 }
 
@@ -413,7 +509,7 @@ notify_next_writer(ThreadContext *thread, ShmLock *lock);
 bool
 thread_queue_to_lock(ThreadContext *thread, ShmLock *lock, ShmPointer container_shm)
 {
-	shmassert(thread->index >= 0 && thread->index < isizeof(ShmReaderBitmap));
+	shmassert(thread->index >= 0 && thread->index < isizeof(ShmReaderBitmap) * 8);
 	bool in_queue = atomic_bitmap_check_me(&lock->queue_threads, thread->index);
 	if (!in_queue)
 	{
@@ -455,14 +551,6 @@ thread_unqueue_from_lock(ThreadContext *thread)
 		ShmContainer *container = LOCAL(thread->pending_lock);
 		_thread_unqueue_from_lock(thread, &container->lock);
 	}
-}
-
-void
-update_tickets(ThreadContext *thread, vl ShmInt *cell)
-{
-	ShmInt ticket = superblock->ticket;
-	*cell += ticket - thread->private_data->last_known_ticket;
-	thread->private_data->last_known_ticket = ticket;
 }
 
 ShmPointer
@@ -525,20 +613,6 @@ atomic_bitmap_has_higher_priority(ShmReaderBitmap contenders, ShmInt last_start)
 	return false;
 }
 
-#define thread_debug_register_line(line) do {\
-	self->private_data->last_writer_lock = lock->writer_lock; \
-	self->private_data->last_writer_lock_pntr = lock; \
-	self->private_data->last_operation = __LINE__; \
-} while (0);
-
-#define thread_debug_register_result(times_var, tickets_var) do {\
-	self->private_data->times_var++; \
-	update_tickets(self, &self->private_data->tickets_var); \
-	self->private_data->last_writer_lock = lock->writer_lock; \
-	self->private_data->last_writer_lock_pntr = lock; \
-	self->private_data->last_operation = __LINE__; \
-} while (0);
-
 int
 preempt_readers(ThreadContext *self, ShmLock *lock)
 {
@@ -549,6 +623,8 @@ preempt_readers(ThreadContext *self, ShmLock *lock)
 		if (shm_cell_have_write_lock(self, lock))
 			lock->release_line = __LINE__;
 		thread_debug_register_result(times_aborted4, tickets_aborted4);
+		self->private_data->last_operation_rslt = RESULT_PREEMPTED;
+		register_write_contention(lock);
 		return RESULT_PREEMPTED;
 	}
 	bool preempted = false;
@@ -573,6 +649,9 @@ preempt_readers(ThreadContext *self, ShmLock *lock)
 					break;
 				}
 				case COMPARED_LOW_HIGH:
+					thread_debug_register_result(times_aborted5, tickets_aborted5);
+					self->private_data->last_operation_rslt = RESULT_PREEMPTED;
+					register_write_contention(lock);
 					return RESULT_PREEMPTED;
 					break;
 				case 0:
@@ -606,26 +685,27 @@ take_write_lock__checks(ThreadContext *self, ShmLock *lock, ShmPointer container
 	if (SBOOL(p_atomic_shm_pointer_get(&self->thread_preempted)))
 	{
 		thread_debug_register_result(times_aborted1, tickets_aborted1);
-		self->private_data->last_operation = __LINE__;
 		self->private_data->last_operation_rslt = RESULT_PREEMPTED;
+		// thread_preempted is almost never caused by this lock
+		// register_write_contention(lock);
 		return RESULT_PREEMPTED;
 	}
 
 	if (random_flinch && rand() % 128 == 3)
 	{
-		thread_debug_register_line(__LINE__);
+		thread_debug_register_line();
 		self->private_data->last_operation_rslt = RESULT_INVALID;
 		return RESULT_PREEMPTED;
 	}
 
-	shmassert(self->index >= 0 && self->index < isizeof(ShmReaderBitmap));
+	shmassert(self->index >= 0 && self->index < isizeof(ShmReaderBitmap) * 8);
 	// we might be having contention with readers after we've got the lock, because someone haven't see our lock yet.
 	if (atomic_bitmap_check_exclusive(&lock->reader_lock, self->index))
 	{
 		if (shm_cell_have_write_lock(self, lock))
 		{
 			shmassert(p_atomic_int_get(&lock->writers_count) <= 1);
-			thread_debug_register_line(__LINE__);
+			thread_debug_register_line();
 			self->private_data->last_operation_rslt = RESULT_OK;
 			return RESULT_OK; // already have the valid lock
 		}
@@ -647,12 +727,13 @@ take_write_lock__checks(ThreadContext *self, ShmLock *lock, ShmPointer container
 					case COMPARED_LOW_HIGH:
 						thread_debug_register_result(times_aborted2, tickets_aborted2);
 						self->private_data->last_operation_rslt = RESULT_PREEMPTED;
+						register_write_contention(lock);
 						return RESULT_PREEMPTED;
 						break;
 					case COMPARED_HIGH_LOW:
 						if (strict) // for postchecking right after we've got the lock
 						{
-							thread_debug_register_line(__LINE__);
+							thread_debug_register_line();
 							self->private_data->last_operation_rslt = RESULT_REPEAT;
 							return RESULT_REPEAT;
 						}
@@ -663,7 +744,7 @@ take_write_lock__checks(ThreadContext *self, ShmLock *lock, ShmPointer container
 		}
 		if (random_flinch && rand() % 128 == 3)
 		{
-			thread_debug_register_line(__LINE__);
+			thread_debug_register_line();
 			self->private_data->last_operation_rslt = RESULT_INVALID;
 			return RESULT_REPEAT;
 		}
@@ -683,7 +764,7 @@ take_write_lock__checks(ThreadContext *self, ShmLock *lock, ShmPointer container
 	}
 
 	// thread is not preempted, doesn't have the lock yet, there are no higher priority readers
-	thread_debug_register_line(__LINE__);
+	thread_debug_register_line();
 	return RESULT_INVALID;
 }
 
@@ -751,7 +832,10 @@ take_write_lock(ThreadContext *self, ShmLock *lock, ShmPointer container_shm, bo
 	shmassert(self->last_start != 0);
 	int check_rslt = take_write_lock__checks(self, lock, container_shm, false);
 	if (check_rslt != RESULT_INVALID)
+	{
+		self->private_data->last_known_ticket = p_atomic_int_get(&superblock->ticket);
 		return check_rslt;
+	}
 	// Thread is not preempted, doesn't have the lock yet, there are no higher priority readers...
 
 	// It's possible to reach this place with "writer_lock = self" due to contending readers.
@@ -782,8 +866,10 @@ take_write_lock(ThreadContext *self, ShmLock *lock, ShmPointer container_shm, bo
 			self->private_data->last_wait_queue = lock->queue_threads;
 			self->private_data->last_wait_writer_lock = lock->writer_lock;
 			self->private_data->last_wait_next_writer = lock->next_writer;
-			thread_debug_register_line(__LINE__);
+
 			self->private_data->last_operation_rslt = RESULT_PREEMPTED;
+			thread_debug_register_result(times_aborted3, tickets_aborted3);
+			register_write_contention(lock);
 			return RESULT_PREEMPTED;
 		}
 	}
@@ -799,8 +885,11 @@ take_write_lock(ThreadContext *self, ShmLock *lock, ShmPointer container_shm, bo
 		self->private_data->last_wait_queue = lock->queue_threads;
 		self->private_data->last_wait_writer_lock = lock->writer_lock;
 		self->private_data->last_wait_next_writer = lock->next_writer;
-		thread_debug_register_line(__LINE__);
+
 		self->private_data->last_operation_rslt = RESULT_PREEMPTED;
+		thread_debug_register_result(times_aborted4, tickets_aborted4);
+		self->private_data->last_operation_rslt = RESULT_PREEMPTED;
+		register_write_contention(lock);
 		return RESULT_PREEMPTED; // Hm-m-m, this way we don't need the queue anymore, but a single highest priority thread.
 	}
 	// Thread is not preempted, doesn't have the lock yet, there are no higher priority readers...
@@ -822,14 +911,14 @@ take_write_lock(ThreadContext *self, ShmLock *lock, ShmPointer container_shm, bo
 			ThreadContext *that_thread = shm_pointer_to_thread(next_writer);
 			if (shm_thread_start_compare(self->last_start, that_thread->last_start) == COMPARED_LOW_HIGH)
 			{
-				thread_debug_register_line(__LINE__);
+				thread_debug_register_line();
 				self->private_data->last_operation_rslt = RESULT_REPEAT;
 				return RESULT_REPEAT; // that's a new high priority thread, we can't CAS it away.
 			}
 		}
 		if (random_flinch && rand() % 128 == 3)
 		{
-			thread_debug_register_line(__LINE__);
+			thread_debug_register_line();
 			self->private_data->last_operation_rslt = RESULT_INVALID;
 			return RESULT_REPEAT;
 		}
@@ -847,9 +936,7 @@ take_write_lock(ThreadContext *self, ShmLock *lock, ShmPointer container_shm, bo
 		int rslt = preempt_readers(self, lock);
 		if (rslt != RESULT_OK)
 		{
-			self->private_data->last_writer_lock = lock->writer_lock;
-			self->private_data->last_writer_lock_pntr = lock;
-			self->private_data->last_operation = __LINE__;
+			thread_debug_register_line();
 			self->private_data->last_operation_rslt = rslt;
 			return rslt; // either preempted by new reader or wait for readers to abort.
 		}
@@ -874,7 +961,7 @@ take_write_lock(ThreadContext *self, ShmLock *lock, ShmPointer container_shm, bo
 	self->private_data->last_operation_rslt = RESULT_OK;
 	if (random_flinch && rand() % 128 == 3)
 	{
-		thread_debug_register_line(__LINE__);
+		thread_debug_register_line();
 		self->private_data->last_operation_rslt = RESULT_INVALID;
 		return RESULT_REPEAT;
 	}
@@ -892,6 +979,8 @@ take_write_lock(ThreadContext *self, ShmLock *lock, ShmPointer container_shm, bo
 				if (thread && shm_thread_start_compare(self->last_start, thread->last_start) == COMPARED_HIGH_LOW)
 				{
 					// shmassert_msg(false, "Got new readers while writer_lock and next_writer barriers were active");
+					self->private_data->last_operation_rslt = RESULT_WAIT;
+					thread_debug_register_result(times_waiting, tickets_waiting);
 					return RESULT_WAIT;
 				}
 			}
@@ -899,7 +988,6 @@ take_write_lock(ThreadContext *self, ShmLock *lock, ShmPointer container_shm, bo
 	}
 	if (random_flinch && rand() % 128 == 3)
 	{
-		thread_debug_register_line(__LINE__);
 		self->private_data->last_operation_rslt = RESULT_INVALID;
 		return RESULT_WAIT;
 	}
@@ -912,6 +1000,7 @@ take_write_lock(ThreadContext *self, ShmLock *lock, ShmPointer container_shm, bo
 		self->private_data->last_operation = __LINE__;
 		self->private_data->last_operation_rslt = after_check_rslt;
 	}
+	self->private_data->last_known_ticket = p_atomic_int_get(&superblock->ticket);
 	return after_check_rslt;
 	///////////////////////////////////////////////////////////////////////////////////////////////
 	// Legacy
@@ -928,7 +1017,7 @@ take_write_lock(ThreadContext *self, ShmLock *lock, ShmPointer container_shm, bo
 		if (shm_thread_start_compare(self->last_start, prev_next_writer_start) == COMPARED_LOW_HIGH)
 		{
 			thread_debug_register_result(times_aborted3, tickets_aborted3);
-			// DebugPause();
+			// DebugPauseAll();
 			return RESULT_WAIT_SIGNAL; // we are in queue but we need to wait for the current lock->next_writer
 		}
 
@@ -1341,16 +1430,17 @@ superblock_alloc_more(ShmPointer thread, int type, vl ShmInt *new_index, int old
 // Transactions
 
 ShmTransactionElement *
-thread_register_lock(ThreadContext *thread, ShmLock *lock, ShmPointer container_shm, int container_type, ShmInt type)
+thread_register_lock(ThreadContext *thread, ShmLock *lock, ShmPointer container_shm,
+                     int container_type, ShmInt element_type)
 {
-	shmassert(type == TRANSACTION_ELEMENT_READ || type == TRANSACTION_ELEMENT_WRITE);
+	shmassert(element_type == TRANSACTION_ELEMENT_READ || element_type == TRANSACTION_ELEMENT_WRITE);
 	bool owned = false;
-	if (type == TRANSACTION_ELEMENT_WRITE)
+	if (element_type == TRANSACTION_ELEMENT_WRITE)
 	{
 		shmassert_msg(lock->writer_lock == thread->self, "Trying to register a write lock we don't own.");
 		owned = lock->writer_lock == thread->self;
 	}
-	else if (type == TRANSACTION_ELEMENT_READ)
+	else if (element_type == TRANSACTION_ELEMENT_READ)
 	{
 		shmassert_msg(atomic_bitmap_check_me(&lock->reader_lock, thread->index), "Trying to register a read lock we don't own.");
 	}
@@ -1360,23 +1450,25 @@ thread_register_lock(ThreadContext *thread, ShmLock *lock, ShmPointer container_
 	ShmTransactionElement *element = thread->current_transaction;
 	while (element)
 	{
-		shmassert(element->type != type || element->container != container_shm);
+		shmassert(element->element_type != element_type || element->container != container_shm);
 		element = element->next;
 	}
 
 	// append the lock into the locks list
-	if (type == TRANSACTION_ELEMENT_WRITE)
+	if (element_type == TRANSACTION_ELEMENT_WRITE)
 	{
 		shmassert(!SBOOL(p_atomic_shm_pointer_get(&lock->transaction_data)));
 		// lock->transaction_data = newone_shm;
 	}
 
 	ShmPointer newone_shm;
-	ShmTransactionElement *newone = (ShmTransactionElement *)get_mem(thread, &newone_shm, sizeof(ShmTransactionElement),
+	ShmTransactionElement *newone = get_mem(thread, &newone_shm, sizeof(ShmTransactionElement),
 		SHM_TRANSACTION_ELEMENT_DEBUG_ID);
 
+	newone->type = SHM_TYPE_TRANSACTION_ELEMENT;
+	newone->size = sizeof(ShmTransactionElement);
 	newone->owner = thread->self;
-	newone->type = type;
+	newone->element_type = element_type;
 	newone->container_type = container_type;
 	newone->container = container_shm;
 
@@ -1394,18 +1486,21 @@ thread_register_lock(ThreadContext *thread, ShmLock *lock, ShmPointer container_
 }
 
 void
-thread_unregister_last_lock(ThreadContext *thread, ShmTransactionElement *element, ShmLock *lock, ShmPointer container_shm, int container_type, ShmInt type)
+thread_unregister_last_lock(ThreadContext *thread, ShmTransactionElement *element, ShmLock *lock, ShmPointer container_shm, int container_type, ShmInt element_type)
 {
 	SHM_UNUSED(lock);
 	ShmPointer to_release = thread->current_transaction_shm;
 	shmassert(LOCAL(to_release) == element);
+	shmassert(SHM_TYPE(element->type) == SHM_TYPE(SHM_TYPE_TRANSACTION_ELEMENT));
 	shmassert(element->container_type == container_type);
 	shmassert(element->container == container_shm);
-	shmassert(element->type == type);
+	shmassert(element->element_type == element_type);
 
 	thread->current_transaction = element->next;
 	thread->current_transaction_shm = element->next_shm;
-	free_mem(thread, to_release, sizeof(ShmTransactionElement));
+	// free_mem(thread, to_release, sizeof(ShmTransactionElement));
+	// We don't actually show ShmTransactionElement to anyone
+	_unallocate_mem(to_release, 0);
 }
 
 // here lock_shm is a pointer to the parent structure, aligned to the correct memory manager border
@@ -1414,9 +1509,7 @@ transaction_lock_read(ThreadContext *thread, ShmLock *lock, ShmPointer container
 {
 	shmassert(thread != NULL);
 	shmassert_msg(thread->transaction_mode != TRANSACTION_NONE, "thread->transaction_mode != TRANSACTION_NONE");
-	shmassert_msg(thread->transaction_mode != TRANSACTION_TRANSIENT, "previous transient transaction is not finished correctly");
-	if (thread->transaction_mode == TRANSACTION_IDLE)
-		p_atomic_int_set(&thread->transaction_mode, TRANSACTION_TRANSIENT); // reclaimer can also read the variable
+	engage_transient(thread);
 
 	if (thread->async_mode)
 	{
@@ -1474,7 +1567,8 @@ transaction_lock_read(ThreadContext *thread, ShmLock *lock, ShmPointer container
 						return RESULT_OK;
 					else
 						return check_result;
-				} else if (had_read_lock)
+				}
+				else if (had_read_lock)
 				{
 					// we don't need to enter the negotiation cycle because we've already reached exclusive ownership once.
 					ShmPointer writer_lock = p_atomic_shm_pointer_get(&lock->writer_lock);
@@ -1526,7 +1620,14 @@ transaction_lock_read(ThreadContext *thread, ShmLock *lock, ShmPointer container
 							final_result = RESULT_OK;
 							break;
 						}
-						if (rslt == RESULT_WAIT_SIGNAL)
+						// RESULT_WAIT_SIGNAL gives like 5% performance boost in 3 worker
+						// scenario but I don't feel like it's significant for the added complexity
+						if (rslt == RESULT_WAIT_SIGNAL || rslt == RESULT_WAIT)
+						{
+							SHM_SMT_PAUSE;
+							continue;
+						}
+						else if (rslt == RESULT_WAIT_SIGNAL)
 						{
 							ShmPointer writer_lock = p_atomic_shm_pointer_get(&lock->writer_lock);
 							ShmPointer next_writer = p_atomic_shm_pointer_get(&lock->next_writer);
@@ -1596,9 +1697,7 @@ transaction_lock_write(ThreadContext *thread, ShmLock *lock, ShmPointer lock_shm
 {
 	shmassert(thread != NULL);
 	shmassert_msg(thread->transaction_mode != TRANSACTION_NONE, "thread->transaction_mode != TRANSACTION_NONE");
-	shmassert_msg(thread->transaction_mode != TRANSACTION_TRANSIENT, "previous transient transaction is not finished correctly");
-	if (thread->transaction_mode == TRANSACTION_IDLE)
-		p_atomic_int_set(&thread->transaction_mode, TRANSACTION_TRANSIENT); // reclaimer can also read the variable
+	engage_transient(thread);
 
 	// LOCKING_TRANSIENT usually does not hold more than one lock at a time
 	if (thread->async_mode)
@@ -1708,7 +1807,14 @@ transaction_lock_write(ThreadContext *thread, ShmLock *lock, ShmPointer lock_shm
 							final_result = RESULT_OK;
 							break;
 						}
-						if (rslt == RESULT_WAIT_SIGNAL)
+						// RESULT_WAIT_SIGNAL gives like 5% performance boost in 3 worker
+						// scenario but I don't feel like it's significant for the added complexity
+						if (rslt == RESULT_WAIT_SIGNAL || rslt == RESULT_WAIT)
+						{
+							SHM_SMT_PAUSE;
+							continue;
+						}
+						else if (rslt == RESULT_WAIT_SIGNAL)
 						{
 							int check_result = take_write_lock__checks(thread, lock, lock_shm, false);
 							// short-cycle condition check because second call of take_write_lock might return RESULT_WAIT instead of RESULT_WAIT_SIGNAL
@@ -1894,15 +2000,19 @@ thread_refresh_ticket(ThreadContext *thread)
 	superblock->ticket_history[thread->last_start % 64] = thread->self;
 }
 
+bool debug_stop_on_contention = false;
+
 int
 transaction_end(ThreadContext *thread, bool rollback)
 {
 	ShmTransactionElement *element = thread->current_transaction;
 	while (element)
 	{
+		if (debug_stop_on_contention)
+			DebugPauseAll();
 		shmassert_msg(element->owner == NONE_SHM || element->owner == thread->self,
 			"element->owner == NONE_SHM || element->owner == thread->self");
-		if (element->type == TRANSACTION_ELEMENT_WRITE)
+		if (element->element_type == TRANSACTION_ELEMENT_WRITE)
 		{
 			shm_types_transaction_end(thread, element, rollback);
 		}
@@ -1920,12 +2030,14 @@ transaction_unlock_all(ThreadContext *thread)
 	{
 		ShmTransactionElement *element = thread->current_transaction;
 
-		shmassert(element->type == TRANSACTION_ELEMENT_READ || element->type == TRANSACTION_ELEMENT_WRITE);
+		shmassert(SHM_TYPE(element->type) == SHM_TYPE(SHM_TYPE_TRANSACTION_ELEMENT));
+		shmassert(element->size == sizeof(ShmTransactionElement));
+		shmassert(element->element_type == TRANSACTION_ELEMENT_READ || element->element_type == TRANSACTION_ELEMENT_WRITE);
 
 		if (element->container_type != CONTAINER_NONE)
 		{
 			ShmContainer *container = LOCAL(element->container);
-			if (element->type == TRANSACTION_ELEMENT_READ)
+			if (element->element_type == TRANSACTION_ELEMENT_READ)
 			{
 				p_atomic_int_dec_and_test(&container->lock.readers_count);
 				shmassert(p_atomic_int_get(&container->lock.readers_count) >= 0);
@@ -1947,6 +2059,8 @@ transaction_unlock_all(ThreadContext *thread)
 		thread->current_transaction_shm = thread->current_transaction->next_shm;
 		thread->current_transaction = thread->current_transaction->next;
 		// free_mem(thread, to_release, sizeof(ShmTransactionElement));
+		// We don't actually show ShmTransactionElement to anyone
+		_unallocate_mem(to_release, 0);
 		shmassert(LOCAL(thread->current_transaction_shm) == thread->current_transaction);
 	}
 	return rslt;
@@ -1997,6 +2111,21 @@ start_transaction(ThreadContext *thread, int mode, int locking_mode, int is_init
 	// 	thread->last_start = GetTickCount(); // rel fence, atomic
 
 	return RESULT_OK;
+}
+
+// safe to call from TRANSACTION_PERSISTENT (does nothing)
+void
+engage_transient(ThreadContext *thread)
+{
+	shmassert_msg(thread->transaction_mode != TRANSACTION_TRANSIENT, "previous transient transaction is not finished correctly");
+	if (thread->transaction_mode == TRANSACTION_IDLE)
+	{
+		thread_unqueue_from_lock(thread);
+		thread_reset_preempted(thread);
+		// By setting the mode from IDLE to TRANSIENT we also signal the reclaimer
+		// that we are in transaction right now and are using temporary pointers.
+		p_atomic_int_set(&thread->transaction_mode, TRANSACTION_TRANSIENT);
+	}
 }
 
 void
@@ -2241,17 +2370,21 @@ init_thread_context(ThreadContext **context)
 	if (index >= 0 && heap_index >= 0)
 	{
 		ShmPointer self = EMPTY_SHM;
-		ThreadContext *thread = (ThreadContext *)get_mem(NULL, &self, sizeof(ThreadContext), SHM_THREAD_CONTEXT_ID);
+		ThreadContext *thread = (ThreadContext *)get_mem(NULL, &self, sizeof(ThreadContext),
+		                                                 SHM_THREAD_CONTEXT_ID);
 		memset(CAST_VL(thread), 0, sizeof(ThreadContext));
 		thread->magic = SHM_THREAD_MAGIC;
 		thread->self = self;
-		thread->private_data = calloc(1, sizeof(ThreadContextPrivate));
+		// thread->private_data = calloc(1, sizeof(ThreadContextPrivate));
+		thread->private_data = get_mem(NULL, &thread->private_data_shm, sizeof(ThreadContextPrivate),
+		                               SHM_THREAD_CONTEXT_ID);
+		// child_processes[index] = ShmGetCurrentThreadId(); // debug
 
 		superblock->threads.threads[index] = self;
 		superblock->superheap.heaps[heap_index].thread = self; // claiming the heap slot
 		// superblock->superheap.heaps[heap_index].size = sizeof(ShmHeap); - inited in init_superblock
 		thread->index = index;
-		shmassert(thread->index >= 0 && thread->index < isizeof(ShmReaderBitmap));
+		shmassert(thread->index >= 0 && thread->index < isizeof(ShmReaderBitmap) * 8);
 
 		thread->thread_state = THREAD_NORMAL;
 		thread->thread_preempted = EMPTY_SHM;
@@ -2335,6 +2468,18 @@ shm_thread_reset_debug_counters(ThreadContext *thread)
 	thread->private_data->tickets_aborted7 = 0;
 	thread->private_data->tickets_aborted8 = 0;
 	thread->private_data->tickets_aborted9 = 0;
+
+
+	thread->private_data->times_read_preempted = 0;
+	thread->private_data->tickets_read_preempted = 0;
+	thread->private_data->times_read_preempted2 = 0;
+	thread->private_data->tickets_read_preempted2 = 0;
+	thread->private_data->times_read_repeated = 0;
+	thread->private_data->tickets_read_repeated = 0;
+	thread->private_data->times_read_waited = 0;
+	thread->private_data->tickets_read_waited = 0;
+	thread->private_data->times_read_aborted = 0;
+	thread->private_data->tickets_read_aborted = 0;
 }
 
 // ShmPointer routines

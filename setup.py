@@ -42,7 +42,7 @@ else:
     extra_compile_args = []
     extra_combo_flags = ['-fno-strict-aliasing']
     if '--debug' in sys.argv or '-g' in sys.argv:
-        extra_compile_args += ['-Og']
+        extra_compile_args += ['-O0']
     extra_libs = ['rt']
 
 pso_ext_sources = ['_pso.c']

@@ -1090,6 +1090,8 @@ reclaim_medium_block(ShmHeapFlexBlockHeader *block, ShmHeapFlexSectorHeader *sec
 	validate_flex_sector_slow(sector, sector_shm);
 }
 
+#define print_allocations false
+
 void *get_mem(ThreadContext *thread, PShmPointer shm_pointer, int size, int debug_id)
 {
 	if (superblock == NULL)
@@ -1183,6 +1185,8 @@ void *get_mem(ThreadContext *thread, PShmPointer shm_pointer, int size, int debu
 
 				shm_lock_release(&heap->lock, __LINE__);
 				get_mem_locking += rdtsc() - spin_clock;
+				if (print_allocations)
+					printf("%d. malloc %s\n", size, debug_id_to_str(debug_id));
 
 				if (shm_pointer)
 					*shm_pointer = shm;
@@ -1211,6 +1215,8 @@ void *get_mem(ThreadContext *thread, PShmPointer shm_pointer, int size, int debu
 				// release_spinlock(&heap->lock, 0, thread->self);
 				shm_lock_release(&heap->lock, __LINE__);
 				get_mem_locking += rdtsc() - spin_clock;
+				if (print_allocations)
+					printf("%d. alloc %s\n", size, debug_id_to_str(debug_id));
 				return (void *)result;
 			}
 			debug_ptr = block;
@@ -1385,7 +1391,7 @@ free_mem(ThreadContext *thread, ShmPointer shm_pointer, int size)
 				break;
 			}
 		}
-		shmassert_msg(success, "Too long stack pushing loop in the free_mem(). Memory leaked.");
+		shmassert_msg(success, "Too long loop while appending into free_list in the free_mem(). Memory leaked.");
 		block = NULL;
 	}
 	if (!block)
@@ -1432,6 +1438,8 @@ _unallocate_mem(ShmPointer shm_pointer, ShmInt lock_value)
 		heap_shm = medium_sector->heap;
 		shmassert(medium_sector);
 		shmassert(medium_block);
+		if (print_allocations)
+			printf("%d. mfree %s\n", medium_block->size, debug_id_to_str(medium_block->last_id));
 	}
 	else
 	{
@@ -1442,6 +1450,9 @@ _unallocate_mem(ShmPointer shm_pointer, ShmInt lock_value)
 		shmassert(sector_small);
 		shmassert(block_small);
 		shmassert(segment_get_sector(block_get_segment((ShmHeapBlockHeader *)data)) == sector_small);
+
+		if (print_allocations)
+			printf("%d. free %s\n", segment_small->element_size, debug_id_to_str(block_small->last_id));
 
 		heap_shm = sector_small->heap;
 	}
@@ -1459,7 +1470,16 @@ _unallocate_mem(ShmPointer shm_pointer, ShmInt lock_value)
 	// 	locked = true;
 	// 	take_spinlock(PCAS2, &heap->lock, lock_value, 0, {});
 	// }
-	if (lock_value != 1)
+	if (lock_value == -1)
+	{
+		// auto-detect
+		if (!shm_lock_owned(&heap->lock))
+		{
+			locked = true;
+			shm_lock_acquire(&heap->lock);
+		}
+	}
+	else if (lock_value != 1)
 	{
 		locked = true;
 		shm_lock_acquire(&heap->lock);

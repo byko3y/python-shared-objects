@@ -67,7 +67,8 @@ process_garbage(void)
 	ShmPointer current_free_list_shm = EMPTY_SHM;
 	for (int idx = 0; idx < MAX_THREAD_COUNT; ++idx)
 	{
-		ShmPointer thread_shm = superblock->threads.threads[idx]; // to slightly ease the detection of random race conditions (bugs)
+		// Save the thread pointer to slightly ease the detection of random race conditions (bugs)
+		ShmPointer thread_shm = superblock->threads.threads[idx];
 		if (SBOOL(thread_shm))
 		{
 			ThreadContext *thread = LOCAL(thread_shm);
@@ -120,9 +121,17 @@ process_garbage(void)
 		// Now we wait for the marked threads.
 		tmp = rdtsc();
 		bool has_thread = true;
+		int counter = 0;
 		while (has_thread && p_atomic_int_get(&superblock->coordinator_data.halt) == 0)
 		{
-			Sleep(0);
+			if (counter < 10)
+			{
+				Sleep(0);
+				counter++;
+			}
+			else
+				Sleep(1);
+
 			has_thread = false;
 			for (int idx = 0; idx < superblock->coordinator_data.count; ++idx)
 			{
@@ -152,7 +161,9 @@ process_garbage(void)
 	ShmPointer locked_heap_shm = EMPTY_SHM;
 	ShmHeap *locked_heap = NULL;
 
-	ShmFreeList *item = LOCAL(current_free_list_shm);
+	ShmPointer prev_shm = EMPTY_SHM;
+	ShmPointer current_shm = current_free_list_shm;
+	ShmFreeList *item = LOCAL(current_shm);
 	ShmFreeList *prev = NULL;
 	while (item)
 	{
@@ -230,7 +241,10 @@ process_garbage(void)
 		}
 
 		prev = item;
-		item = LOCAL(item->next);
+		prev_shm = current_shm;
+		current_shm = item->next;
+		item = LOCAL(current_shm);
+		_unallocate_mem(prev_shm, -1);
 	}
 	if (locked)
 	{

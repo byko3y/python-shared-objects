@@ -368,6 +368,7 @@ extern vl char * superblock_mmap[SHM_BLOCK_COUNT / SHM_BLOCK_GROUP_SIZE]; // arr
 #define SHM_TYPE_UNICODE  (4 | SHM_TYPE_FLAG_REFCOUNTED)
 #define SHM_TYPE_REF_UNICODE  (4 | SHM_TYPE_FLAG_REFCOUNTED)
 #define SHM_TYPE_BYTES  (5 | SHM_TYPE_FLAG_REFCOUNTED)
+#define SHM_TYPE_TRANSACTION_ELEMENT   (0x10)
 // currently same as SHM_TYPE_UNDICT
 #define SHM_TYPE_OBJECT  (0x20 | SHM_TYPE_CELL)
 #define SHM_TYPE_TUPLE  (0x30 | SHM_TYPE_FLAG_REFCOUNTED)
@@ -601,6 +602,9 @@ typedef vl struct {
 	// those register only real uses of read/write locks, not just flags during contention resolution.
 	ShmInt writers_count;
 	ShmInt readers_count;
+	ShmInt read_contention_count;
+	ShmInt write_contention_count;
+	ShmInt break_on_contention;
 } ShmLock;
 
 typedef vl struct _ShmContainer
@@ -1091,9 +1095,10 @@ typedef vl2 struct {
 // Modified container still contains the modified value itself, because the ratio is (1 container):(1 ShmTransactionElement):(N values).
 typedef vl struct ShmTransactionElement_ ShmTransactionElement;
 typedef vl struct ShmTransactionElement_ {
+	SHM_ABSTRACT_BLOCK
 	ShmPointer owner; // thread that created this item
 	// ShmPointer lock; // need to check it every time we commit/rollback, coz we might've already lost the lock due to rollback from outside.
-	ShmInt type;
+	ShmInt element_type;
 	ShmInt container_type;
 	ShmPointer container; // ShmDictDeltaArray or ShmQueueChanges
 	ShmTransactionElement *next;
@@ -1172,6 +1177,22 @@ typedef vl struct {
 	ShmInt tickets_aborted8;
 	ShmInt times_aborted9;
 	ShmInt tickets_aborted9;
+
+	ShmInt last_read_operation;
+	int last_read_rslt;
+
+	ShmInt times_read_preempted;
+	ShmInt tickets_read_preempted;
+	ShmInt times_read_preempted2;
+	ShmInt tickets_read_preempted2;
+	ShmInt times_read_preempted3;
+	ShmInt tickets_read_preempted3;
+	ShmInt times_read_repeated;
+	ShmInt tickets_read_repeated;
+	ShmInt times_read_waited;
+	ShmInt tickets_read_waited;
+	ShmInt times_read_aborted;
+	ShmInt tickets_read_aborted;
 } ThreadContextPrivate;
 
 #define SHM_THREAD_MAGIC 0xB6C7
@@ -1207,11 +1228,12 @@ typedef vl struct ThreadContext_ {
 	ShmPointer self;
 	ShmInt index; // ShmReaderBitmap bit
 	ThreadContextPrivate *private_data;
+	ShmPointer private_data_shm;
 	// separate thread_state and thread_preempted so thread_state can be set with simple atomical operation while thread_preempted is changed using CAS
 	ShmInt thread_state;
 	ShmPointer thread_preempted; // thread that should be signalled once the preemption is finished
 	ShmInt always_retry;
-	ShmInt transaction_mode; // TRANSACTION_NONE, TRANSACTION_TRANSIENT, TRANSACTION_PERSISTENT
+	ShmInt transaction_mode; // TRANSACTION_NONE, TRANSACTION_IDLE, TRANSACTION_TRANSIENT, TRANSACTION_PERSISTENT
 	ShmInt transaction_lock_mode; // LOCKING_NONE, LOCKING_WRITE, LOCKING_ALL
 	// ShmTicks last_start; // the moment when the current transactional block/function was first attempted.
 	ShmInt last_start; // ticket instead of ticks
@@ -1284,6 +1306,8 @@ transient_check_clear(ThreadContext *thread);
 
 int
 start_transaction(ThreadContext *thread, int mode, int locking_mode, int is_initial, int *recursion_count);
+void
+engage_transient(ThreadContext *thread);
 void
 continue_transaction(ThreadContext *thread);
 int

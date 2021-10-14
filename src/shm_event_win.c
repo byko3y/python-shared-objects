@@ -169,7 +169,7 @@ shm_event_wait(ShmEvent *event, ShmInt milliseconds, bool debug_break)
 				{
 					fprintf(stderr, "shm_event_wait 2 timeout\n");
 					if (DEBUG_STRICT)
-						DebugPause();
+						DebugPauseAll();
 				}
 				else
 					/* fprintf(stderr, "shm_event_wait timeout\n")*/ ;

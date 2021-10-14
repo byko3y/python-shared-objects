@@ -14,7 +14,7 @@ class SomeSharedClass(pso.ShmObject):
         self.field += val
 
 def run_child():
-    root = pso.get_root()
+    root = pso.root()
     stat = root.stat
     promise = root.signal
     print('stat', stat)
@@ -57,7 +57,7 @@ def run_child():
     log_msg('Non-transacted cycle count {}, attempted cycles {}'.format(cycle_count2, attempt_count2))
 
 def run_parent():
-    root = pso.get_root()
+    root = pso.root()
 
     root.obj = SomeSharedClass()
     log_msg("Shared object field = {}".format(root.obj.field))
@@ -137,6 +137,19 @@ def run_parent():
     log_msg('Iterating another ShmList:')
     with transaction:
         for item in list2:
+            print(item)
+
+    pso.root().list3 = [1, 2, 3]
+    list3 = pso.root().list3
+    list3[0] = 'First'
+    list3_correct = ['First', 2, 3]
+    for i in range(3):
+        if list3_correct[i] != list3[i]:
+            raise Exception('list3_correct[{}] != list3[{}]: {} != {}'.format(i, i, list3_correct[i], list3[i]))
+
+    log_msg('Iterating implicitly created ShmList:')
+    with transaction:
+        for item in list3:
             print(item)
 
     d = pso.ShmDict()

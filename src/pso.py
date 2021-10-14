@@ -1,3 +1,4 @@
+import _pso
 from _pso import *
 import sys
 import os
@@ -9,6 +10,8 @@ import ast
 import inspect
 from contextlib import AbstractContextManager
 
+__all__ = ['PsoLoader', 'install', 'transaction_debug', 'transaction', 'transform_module',
+    'Transacted', 'Transient'] + [m for m in dir(_pso) if not m.startswith('__')]
 
 from importlib.abc import Loader, MetaPathFinder
 from importlib.util import spec_from_file_location
@@ -229,22 +232,48 @@ def decorator(cls):
 
     return Wrapper
 
-def transacted(func):
+def transaction_debug(func):
     def wrapper(*args, **kwargs):
-        while True:
-            transaction_start()
-            try:
-                return func(*args, **kwargs)
-            except pso.ShmAbort:
-                transaction_rollback_retaining()
-            except:
-                transaction_rollback()
-                raise
-            else:
-                transaction_commit()
-                break;
+        with Transacted() as __transaction_context__:
+            counter = 0
+            while True:
+                try:
+                    counter += 1
+                    return func(*args, **kwargs)
+                except ShmAbort:
+                    if __transaction_context__.is_nested: # partial commit/rollback is not supported
+                        raise
+                    else:
+                        if counter > 200:
+                            global_debug_stop_on_contention()
+                        transaction_rollback_retaining()
+                        continue;
+                except:
+                    raise
+                else:
+                    break # success, commit
 
-    return func
+    return wrapper
+
+def transaction(func):
+    def wrapper(*args, **kwargs):
+        with Transacted() as __transaction_context__:
+            counter = 0
+            while True:
+                try:
+                    return func(*args, **kwargs)
+                except ShmAbort:
+                    if __transaction_context__.is_nested: # partial commit/rollback is not supported
+                        raise
+                    else:
+                        transaction_rollback_retaining()
+                        continue;
+                except:
+                    raise
+                else:
+                    break # success, commit
+
+    return wrapper
 
 class Transacted(AbstractContextManager):
     def __enter__(self):
@@ -330,3 +359,17 @@ def pso(obj):
         return obj
     else:
         raise Exception("I don't know what happened, but __dict__ is not dict")
+
+if __name__ == '__main__':
+    if not sys.argv[1]:
+        Exception('Specify file name to run')
+    filename = sys.argv[1]
+    # similar to pdb._runscript and runpy._run_module_as_main
+    main_globals = sys.modules["__main__"].__dict__
+    del sys.argv[0]
+
+    with open(filename, "rb") as fp:
+        tree = transform_module(fp.read(), filename)
+        code = compile(tree, filename, 'exec')
+        main_globals['__ast__'] = tree
+        exec(code, main_globals)

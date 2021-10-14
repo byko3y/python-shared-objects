@@ -89,7 +89,7 @@ ShmGetCurrentProcessId(void) {
 #endif
 
 static inline bool
-DebugPause(void)
+DebugPauseAll(void)
 {
 #if (defined(P_OS_WIN) || defined(P_OS_WIN64))
 	int rslt = 0;
@@ -111,9 +111,10 @@ DebugPause(void)
 			error = GetLastError();
 	}
 #else
+	ShmThreadID myid = ShmGetCurrentThreadId();
 	for (int i = 0; i < MAX_THREAD_COUNT; i++)
 	{
-		if (child_processes[i] != 0)
+		if (child_processes[i] != 0 && child_processes[i] != myid)
 		{
 			kill(child_processes[i], SIGSTOP);
 		}
@@ -161,3 +162,4 @@ extern void _shmassert(bool condition, char *condition_msg, char *message, char 
 extern bool random_flinch;
 extern bool transient_pause;
 extern bool reclaimer_debug_info;
+extern bool debug_stop_on_contention;

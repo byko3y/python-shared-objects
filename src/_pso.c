@@ -117,6 +117,8 @@ init(PyObject *self, PyObject *args) {
 	ShmUnDict *dict = new_shm_undict(thread, &superblock->root_container);
 	dict->type = SHM_TYPE_OBJECT;
 
+	start_transaction(thread, TRANSACTION_IDLE, LOCKING_WRITE, true, NULL);
+
 	return PyUnicode_FromString(CAST_VL(&superblock_desc.id[0]));
 }
 
@@ -130,6 +132,8 @@ connect_to_coordinator(PyObject *self, PyObject *args) {
 	long rslt = init_superblock(name);
 	init_thread_context(&thread);
 	debug_print("%d. Thread context inited\n", ShmGetCurrentProcessId());
+
+	start_transaction(thread, TRANSACTION_IDLE, LOCKING_WRITE, true, NULL);
 
 	return PyLong_FromLong(rslt);
 }
@@ -212,6 +216,83 @@ set_debug_print(PyObject *self, PyObject *obj)
 	}
 }
 
+int64_t total_wait_counter = 0;
+int64_t total_wait_loops = 0;
+
+static PyObject*
+print_thread_counters(PyObject *self, PyObject *args)
+{
+	printf("Times:        waited %5d, %5d,     waited2 %5d, %5d,\n",
+		thread->private_data->times_waiting, thread->private_data->tickets_waiting,
+		thread->private_data->times_waiting2, thread->private_data->tickets_waiting2);
+	printf("             repeated %5d, %5d,     aborted1 %5d, %5d,\n",
+		thread->private_data->times_repeated, thread->private_data->tickets_repeated,
+	thread->private_data->times_aborted1, thread->private_data->tickets_aborted1);
+	printf("             aborted2 %5d, %5d,     aborted3 %5d, %5d,\n",
+		thread->private_data->times_aborted2, thread->private_data->tickets_aborted2,
+		thread->private_data->times_aborted3, thread->private_data->tickets_aborted3);
+	printf("             aborted4 %5d, %5d,     aborted5 %5d, %5d,\n",
+		thread->private_data->times_aborted4, thread->private_data->tickets_aborted4,
+		thread->private_data->times_aborted5, thread->private_data->tickets_aborted5);
+	printf("             aborted6 %5d, %5d,    aborted7 %5d, %5d,\n",
+		thread->private_data->times_aborted6, thread->private_data->tickets_aborted6,
+	thread->private_data->times_aborted7, thread->private_data->tickets_aborted7);
+	printf("             aborted8 %5d, %5d,    aborted9 %5d, %5d.\n",
+		thread->private_data->times_aborted8, thread->private_data->tickets_aborted8,
+		thread->private_data->times_aborted9, thread->private_data->tickets_aborted9);
+	printf("reads:      preempted %5d, %5d,\n",
+		thread->private_data->times_read_preempted, thread->private_data->tickets_read_preempted);
+	printf("            preempted2 %5d, %5d,   preempted3 %5d, %5d,\n",
+		thread->private_data->times_read_preempted2, thread->private_data->tickets_read_preempted2,
+		thread->private_data->times_read_preempted3, thread->private_data->tickets_read_preempted3);
+	printf("              repeated %5d, %5d,       waited %5d, %5d,\n",
+		thread->private_data->times_read_repeated, thread->private_data->tickets_read_repeated,
+		thread->private_data->times_read_waited, thread->private_data->tickets_read_waited);
+	printf("               aborted %5d, %5d.\n",
+		thread->private_data->times_read_aborted, thread->private_data->tickets_read_aborted);
+	printf("               retry loops count %lli, retry loops %lli\n",
+		total_wait_loops, total_wait_counter);
+
+	Py_RETURN_NONE;
+}
+
+static PyObject*
+global_debug_stop_on_contention(PyObject *self, PyObject *args)
+{
+	debug_stop_on_contention = true;
+	Py_RETURN_NONE;
+}
+
+static PyObject*
+object_debug_stop_on_contention(PyObject *self, PyObject *arg)
+{
+	PyTypeObject *type = Py_TYPE(arg);
+	if (type == &ShmList_Type || type == &ShmDict_Type ||
+		type == &ShmObject_Type || PyType_IsSubtype(type, &ShmObject_Type)) // only ShmObject descendants are supported
+	{
+		ShmPointer container_shm = ((ShmBase*)arg)->data;
+		ShmContainer *block = LOCAL(container_shm);
+		shmassert((block->type & SHM_TYPE_CELL) == SHM_TYPE_CELL);
+		block->lock.break_on_contention = true;
+	}
+	Py_RETURN_NONE;
+}
+
+static PyObject*
+get_contention_count(PyObject *self, PyObject *arg)
+{
+	PyTypeObject *type = Py_TYPE(arg);
+	if (type == &ShmList_Type || type == &ShmDict_Type ||
+		type == &ShmObject_Type || PyType_IsSubtype(type, &ShmObject_Type)) // only ShmObject descendants are supported
+	{
+		ShmPointer container_shm = ((ShmBase*)arg)->data;
+		ShmContainer *block = LOCAL(container_shm);
+		shmassert((block->type & SHM_TYPE_CELL) == SHM_TYPE_CELL);
+		return Py_BuildValue("(ll)", block->lock.read_contention_count, block->lock.write_contention_count);
+	}
+	Py_RETURN_NONE;
+}
+
 static PyObject*
 transient_start(PyObject *self, PyObject *args)
 {
@@ -274,6 +355,7 @@ transaction_rollback_retaining(PyObject *self, PyObject *args)
 	if (!check_thread_inited())
 		return NULL;
 	abort_transaction_retaining(thread);
+	Sleep(0);
 	Py_RETURN_NONE;
 }
 
@@ -289,41 +371,69 @@ transaction_active(PyObject *self, PyObject *args)
 }
 
 #define RETRY_LOOP(action, retry_checks, on_abort, on_failure) do { \
-	int _rslt = RESULT_INVALID; \
-	if (thread->transaction_mode == TRANSACTION_NONE) \
-	{ \
-		PyErr_SetString(Shm_Exception, "Invalid operation outside transaction"); \
-		on_abort \
-	} \
-	_rslt = action; \
-	if (_rslt == RESULT_OK) \
-		break; \
-	/* debug_print("Retry triggered!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"); */ \
-	retry_checks; \
-	if (_rslt == RESULT_REPEAT) \
-		continue; \
-	else if (_rslt == RESULT_FAILURE) \
-	{ \
-		on_failure \
-	} else if (_rslt == RESULT_WAIT || _rslt == RESULT_WAIT_SIGNAL) \
-	{ \
-		Sleep(0); \
-	} \
-	else \
-	{ \
-		/* debug_print("TRANSACTION ABORTED!!!!!!!!!!!!!!!!\n"); */ \
-		shmassert(result_is_abort(_rslt)); \
-		abort_transaction_retaining(thread); \
-		if (thread->transaction_mode != TRANSACTION_PERSISTENT) \
-			continue; \
-		else \
+	int __counter = 0; \
+	do { \
+		int _rslt = RESULT_INVALID; \
+		if (thread->transaction_mode == TRANSACTION_NONE) \
 		{ \
-			PyErr_SetString(Shm_Abort, "Transaction aborted"); \
+			PyErr_SetString(Shm_Exception, "Invalid operation outside transaction"); \
 			on_abort \
 		} \
+		_rslt = action; \
+		if (_rslt == RESULT_OK) \
+		{ \
+			if (__counter != 0) \
+			{ \
+				total_wait_counter += __counter; \
+				total_wait_loops += 1; \
+			} \
+			break; \
+		} \
+		__counter++; \
+		/* debug_print("Retry triggered!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"); */ \
+		retry_checks; \
+		if (_rslt == RESULT_REPEAT) \
+		{ \
+			continue; \
+		} \
+		else if (_rslt == RESULT_FAILURE) \
+		{ \
+			on_failure \
+		} \
+		else if (_rslt == RESULT_WAIT || _rslt == RESULT_WAIT_SIGNAL) \
+		{ \
+			if (__counter < 64) \
+				SHM_SMT_PAUSE; \
+			else \
+				Sleep(0); \
+		} \
+		else \
+		{ \
+			/* debug_print("TRANSACTION ABORTED!!!!!!!!!!!!!!!!\n"); */ \
+			shmassert(result_is_abort(_rslt)); \
+			abort_transaction_retaining(thread); \
+			if (thread->transaction_mode != TRANSACTION_PERSISTENT) \
+			{ \
+				if (__counter < 64) \
+					SHM_SMT_PAUSE; \
+				else \
+					Sleep(0); \
+				\
+				continue; \
+			} \
+			else \
+			{ \
+				total_wait_counter += __counter; \
+				total_wait_loops += 1; \
+				PyErr_SetString(Shm_Abort, "Transaction aborted"); \
+				on_abort \
+			} \
+		} \
 	} \
+	while (true); \
 } \
-while (true) \
+while (0) \
+
 
 int
 object_to_shm_value(PyObject *obj, ShmPointer *data)
@@ -396,7 +506,8 @@ prepare_item_for_shm_container(PyObject *value, ShmPointer *rslt)
 {
 	PyTypeObject *type = Py_TYPE(value);
 	__ShmPointer newval = EMPTY_SHM;
-	if (type == &ShmValue_Type || type == &ShmPromise_Type || type == &ShmList_Type || type == &ShmDict_Type ||
+	if (type == &ShmValue_Type || type == &ShmTuple_Type || type == &ShmPromise_Type ||
+		type == &ShmList_Type || type == &ShmDict_Type ||
 		type == &ShmObject_Type || PyType_IsSubtype(type, &ShmObject_Type)) // only ShmObject descendants are supported
 	{
 		newval = ((ShmBase*)value)->data;
@@ -546,6 +657,8 @@ abstract_block_to_object(ShmAbstractBlock *data, ShmPointer data_shm)
 	{
 		const Py_UCS4 *unival = shm_value_get_data(val_data);
 		ShmInt size = shm_value_get_size(val_data) / isizeof(Py_UCS4);
+		/* Don't do this, kids, coz eventually you going to get:
+		 _PyUnicode_CheckConsistency: Assertion `maxchar >= 0x10000' failed.
 		PyObject *rslt = PyUnicode_New(size, 0x10ffffU); // 4-byte maxchar
 		// from PyUnicode_WriteChar
 		if (!PyUnicode_Check(rslt) || !PyUnicode_IS_COMPACT(rslt)) {
@@ -564,6 +677,9 @@ abstract_block_to_object(ShmAbstractBlock *data, ShmPointer data_shm)
 		for (ShmInt i = 0; i < size; ++i)
 			// PyUnicode_WriteChar(rslt, i, unival[i]);
 			PyUnicode_WRITE(kind, data, i, unival[i]);
+		*/
+		SHM_UNUSED(unicode_modifiable);
+		PyObject *rslt = PyUnicode_FromKindAndData(PyUnicode_4BYTE_KIND, unival, size);
 		return rslt;
 	}
 	case SHM_TYPE(SHM_TYPE_BYTES):
@@ -1377,23 +1493,33 @@ _shm_list_append(ShmListObject *self, PyObject *value) {
 		PyErr_SetString(PyExc_ValueError, "List object internal data is uninitialized.");
 		return NULL;
 	}
-	
-	if (!PyObject_TypeCheck(value, &ShmValue_Type)) {
+
+	/* if (!PyObject_TypeCheck(value, &ShmValue_Type)) {
 		PyErr_SetString(PyExc_ValueError, "value must be ShmValue");
 		return NULL;
 	}
-
 	ShmValueObject * _value = (ShmValueObject *) value;
+	*/
+
+	ShmPointer newval = EMPTY_SHM;
+	if (prepare_item_for_shm_container(value, &newval) == -1 || newval == EMPTY_SHM)
+	{
+		if (!PyErr_Occurred())
+			PyErr_SetString(Shm_Exception, "Invalid pso object when appending to ShmList");
+		return NULL;
+	}
+
 	// CellRef cell;
 	ShmInt index = -1;
-		RETRY_LOOP(shm_list_append(thread, list, _value->data, &index),
+		// RETRY_LOOP(shm_list_append(thread, list, _value->data, &index),
+		RETRY_LOOP(shm_list_append(thread, list, newval, &index),
 		{ shmassert(index == -1); },
 		{ return NULL; },
 		{
 			PyErr_SetString(Shm_Exception, "Internal failure");
 			return NULL;
 		});
-	
+
 	// acquires the shm_list_append result
 	// PyObject *obj =  PyObject_CallFunction((PyObject *)&ShmObject_Type, "");
 	// ShmObjectObject *cellobj = (ShmObjectObject *) obj;
@@ -1429,7 +1555,7 @@ shm_list_item(ShmListObject* self, Py_ssize_t i)
 		PyErr_SetString(Shm_Exception, "Invalid list object");
 		return NULL;
 	}
-	if (i <= 0)
+	if (i < 0)
 	{
 		PyErr_SetString(PyExc_IndexError, "list index out of range");
 		return NULL;
@@ -2677,7 +2803,7 @@ static PyMethodDef pso_methods[] = {
 		"Cancel transaction changes, but keep the current transaction mode active"
 	},
 	{
-		"get_root", get_root, METH_NOARGS,
+		"root", get_root, METH_NOARGS,
 		"Get a superblock-bound shared container"
 	},
 	{
@@ -2688,9 +2814,25 @@ static PyMethodDef pso_methods[] = {
 		"set_debug_reclaimer", set_debug_reclaimer, METH_O,
 		"Enable reclaimer's statistic print for debugging purpose"
 	},
-    {
+	{
 		"set_debug_print", set_debug_print, METH_O,
 		"Enable pso module debug printf-s"
+	},
+	{
+		"print_thread_counters", print_thread_counters, METH_NOARGS,
+		"Print transaction profiling data"
+	},
+	{
+		"global_debug_stop_on_contention", global_debug_stop_on_contention, METH_NOARGS,
+		"Pause all processes when contention for resource is encountered"
+	},
+	{
+		"object_debug_stop_on_contention", object_debug_stop_on_contention, METH_O,
+		"Pause all processes when contention for resource is encountered"
+	},
+	{
+		"get_contention_count", get_contention_count, METH_O,
+		"Get contention counter for specific container (read, write)"
 	},
 	{
 		"try_object_to_shm_value", try_object_to_shm_value, METH_O,

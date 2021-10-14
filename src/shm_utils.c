@@ -63,7 +63,7 @@ void _shmassert(bool condition, char *condition_msg, char *message, char *file, 
 				fputs(msg, stderr); \
 			} \
 			fprintf(stderr, "\n"); \
-			if (DebugPause()) \
+			if (DebugPauseAll()) \
 				assert(false); \
 	} \
 }
