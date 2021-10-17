@@ -840,8 +840,10 @@ shm_pointer_to_object_consume(ShmPointer pntr)
 				goto error;
 			}
 			// _pickle.c: instantiate()
-			_Py_IDENTIFIER(__new__);
-			PyObject *instance = _PyObject_CallMethodIdObjArgs(cls, &PyId___new__, cls, NULL);
+			// _Py_IDENTIFIER(__new__);
+			// PyObject *instance = _PyObject_CallMethodIdObjArgs(cls, &PyId___new__, cls, NULL);
+			// Bypassing the __new__, because we actually don't want to create a new shared dict inside it.
+			PyObject *instance = PyType_GenericNew(_cls, NULL, NULL);
 			if (instance == NULL)
 			{
 				PyErr_Format(Shm_Exception, "Failed to instantiate class %U from module %U", class_name, module_name);
