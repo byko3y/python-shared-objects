@@ -166,7 +166,7 @@ def transform_module(source, filename):
 
     if dump_ast:
         print('Code after modification:')
-        unparse_ast(rslt)
+        print(unparse_ast(rslt))
         # print(ast.dump(rslt, include_attributes = True))
 
     return rslt
@@ -361,15 +361,16 @@ def pso(obj):
         raise Exception("I don't know what happened, but __dict__ is not dict")
 
 if __name__ == '__main__':
-    if not sys.argv[1]:
-        Exception('Specify file name to run')
+    if len(sys.argv) <= 1:
+        raise Exception('Specify file name to run')
     filename = sys.argv[1]
     # similar to pdb._runscript and runpy._run_module_as_main
     main_globals = sys.modules["__main__"].__dict__
     del sys.argv[0]
 
     with open(filename, "rb") as fp:
-        tree = transform_module(fp.read(), filename)
+        orig_file = fp.read()
+        tree = transform_module(orig_file, filename)
         code = compile(tree, filename, 'exec')
         main_globals['__ast__'] = tree
         exec(code, main_globals)
