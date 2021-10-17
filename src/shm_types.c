@@ -4235,6 +4235,8 @@ shm_undict_destroy(ThreadContext *thread, ShmUnDict *dict, ShmPointer dict_shm)
 	}
 	if (dict->delta_buckets != EMPTY_SHM)
 		shm_pointer_empty_atomic(thread, &dict->delta_buckets);
+
+	shm_pointer_empty_atomic(thread, &dict->class_name);
 }
 
 void

@@ -797,84 +797,75 @@ shm_pointer_to_object_consume(ShmPointer pntr)
 				return NULL;
 			}
 			PyObject *class_name = PyUnicode_FromKindAndData(PyUnicode_4BYTE_KIND,
-			                                                 CAST_VL(&class_path.data[separator+1]), class_path.len - 1 - separator - 1);
+			                                                 CAST_VL(&class_path.data[separator+1]),
+			                                                 class_path.len - 1 - separator - 1);
 			if (class_name == NULL)
 			{
 				PyErr_Format(Shm_Exception, "Internal error");
-				Py_DecRef(module_name);
+				Py_DECREF(module_name);
 				shm_pointer_release(thread, pntr);
 				return NULL;
 			}
 			// _pickle.c: _pickle_Unpickler_find_class_impl()
 			PyObject *module = PyImport_Import(module_name);
+			PyObject *cls = NULL;
 			if (module == NULL)
 			{
 				PyErr_Format(Shm_Exception, "Failed to load module %U", module_name);
-				shm_pointer_release(thread, pntr);
-				Py_DECREF(module_name);
-				Py_DECREF(class_name);
-				return NULL;
+				goto error;
 			}
-			PyObject *cls = NULL;
 			if (_PyObject_LookupAttr(module, class_name, &cls) < 0)
 			{
 				PyErr_Format(Shm_Exception, "Internal error");
-				shm_pointer_release(thread, pntr);
 				Py_DECREF(module);
-				Py_DECREF(module_name);
-				Py_DECREF(class_name);
-				return NULL;
+				goto error;
 			}
 			Py_DECREF(module);
 			if (cls == NULL)
 			{
 				PyErr_Format(Shm_Exception, "Class %U not found in module %U", class_name, module_name);
-				shm_pointer_release(thread, pntr);
-				Py_DECREF(module_name);
-				Py_DECREF(class_name);
-				return NULL;
+				goto error;
 			}
 			if (!PyType_Check(cls))
 			{
 				PyErr_Format(Shm_Exception, "%U.%U is not a class", module_name, class_name);
-				shm_pointer_release(thread, pntr);
-				Py_DECREF(module_name);
-				Py_DECREF(class_name);
 				Py_DECREF(cls);
-				return NULL;
+				goto error;
 			}
 			PyTypeObject *_cls = (PyTypeObject *)cls;
 			if (_cls != &ShmObject_Type && !PyType_IsSubtype(_cls, &ShmObject_Type))
 			{
 				PyErr_Format(Shm_Exception, "Cannot put into shared memory a class %U that is not derrived from pso.ShmObject", class_name);
-				shm_pointer_release(thread, pntr);
-				Py_DECREF(module_name);
-				Py_DECREF(class_name);
 				Py_DECREF(cls);
-				return NULL;
+				goto error;
 			}
 			// _pickle.c: instantiate()
 			_Py_IDENTIFIER(__new__);
 			PyObject *instance = _PyObject_CallMethodIdObjArgs(cls, &PyId___new__, cls, NULL);
-			Py_DECREF(cls);
 			if (instance == NULL)
 			{
 				PyErr_Format(Shm_Exception, "Failed to instantiate class %U from module %U", class_name, module_name);
-				shm_pointer_release(thread, pntr);
-				Py_DECREF(module_name);
-				Py_DECREF(class_name);
-				return NULL;
+				goto error;
 			}
 			if (PyObject_IsInstance(instance, cls) != 1)
 			{
 				PyErr_Format(Shm_Exception, "For some reason %U.%U is not derrived from pso.ShmObject despite the fact its class is.",
 				             module_name, class_name);
-				shm_pointer_release(thread, pntr);
-				Py_DECREF(module_name);
-				Py_DECREF(class_name);
-				return NULL;
+
+				goto error;
 			}
 			result_obj = (ShmObjectObject *)instance;
+		error:
+			Py_XDECREF(cls);
+			cls = NULL;
+			Py_DECREF(module_name);
+			module_name = NULL;
+			Py_XDECREF(class_name);
+			class_name = NULL;
+			if (result_obj == NULL)
+				shm_pointer_release(thread, pntr);
+			else
+				result_obj->data = pntr;
 		}
 		else
 		{
@@ -885,8 +876,9 @@ shm_pointer_to_object_consume(ShmPointer pntr)
 				shm_pointer_release(thread, pntr);
 				return NULL;
 			}
+			else
+				result_obj->data = pntr;
 		}
-		result_obj->data = pntr;
 		return (PyObject*)result_obj;
 	}
 	else if (actual_type == shm_type_get_type(SHM_TYPE_PROMISE))
@@ -1164,12 +1156,6 @@ ShmTuple_iter(PyObject *obj)
 	if (tuple.local == NULL)
 	{
 		PyErr_SetString(PyExc_ValueError, "no tuple");
-		return NULL;
-	}
-
-	if (thread->transaction_mode != TRANSACTION_PERSISTENT)
-	{
-		PyErr_SetString(Shm_Exception, "Iterators in transient transaction mode are not supported.");
 		return NULL;
 	}
 
@@ -2458,12 +2444,17 @@ _Py_IDENTIFIER(__name__);
 //  return module + '.' + klass.__qualname__
 // Also see Modules/_pickle.c: save_global() and whichmodule()
 
-static int
-ShmObjectObject_init(ShmObjectObject *self, PyObject *args, PyObject *kwds)
+// static int
+// ShmObjectObject_init(ShmObjectObject *self, PyObject *args, PyObject *kwds)
+PyObject *
+ShmObjectObject_new(PyTypeObject *type, PyObject *args, PyObject *kwds)
 {
+	ShmObjectObject *self = (ShmObjectObject *)PyType_GenericNew(type, args, kwds);
+	if (self == NULL)
+		return NULL;
 	self->data = EMPTY_SHM;
 	if (!check_thread_inited())
-		return -1;
+		return NULL;
 	ShmUnDict *dict = new_shm_undict(thread, &self->data);
 	shmassert(dict->type == SHM_TYPE_UNDICT);
 	dict->type = SHM_TYPE_OBJECT;
@@ -2471,13 +2462,15 @@ ShmObjectObject_init(ShmObjectObject *self, PyObject *args, PyObject *kwds)
 	// PyObject *myclass = NULL;
 	// if (_PyObject_LookupAttrId((PyObject*)self, &PyId___class__, &myclass) < 0)
 	//     return -1;
-	PyTypeObject *myclass = Py_TYPE(self);
-	shmassert(myclass);
+
+	// PyTypeObject *myclass = Py_TYPE(self);
+	// shmassert(myclass);
+	PyTypeObject *myclass = type;
 	PyObject *module = NULL;
 	if (_PyObject_LookupAttrId((PyObject*)myclass, &PyId___module__, &module) < 0)
 	{
 		PyErr_SetString(Shm_Exception, "ShmObject's class has no __module__ attribute.");
-		return -1;
+		return NULL;
 	}
 
 	PyObject *qualname = NULL;
@@ -2504,11 +2497,11 @@ ShmObjectObject_init(ShmObjectObject *self, PyObject *args, PyObject *kwds)
 	str.data[qualname_size + 1 + module_size] = 0;
 	dict->class_name = str_shm;
 
-	return 0;
+	return (PyObject *)self;
 error:
 	Py_XDECREF(module);
 	Py_XDECREF(qualname);
-	return -1;
+	return NULL;
 }
 
 PyObject *
@@ -2678,8 +2671,8 @@ static PyTypeObject ShmObject_Type = {
 	// .tp_methods = ShmObjectObject_methods,
 	// .tp_members = ShmObjectObject_members,
 	.tp_getset = ShmObjectObject_getset,
-	.tp_init = (initproc) ShmObjectObject_init,
-	.tp_new = PyType_GenericNew,
+	// .tp_init = (initproc) ShmObjectObject_init,
+	.tp_new = ShmObjectObject_new,
 };
 
 // ShmPromise
