@@ -1351,6 +1351,8 @@ shm_list_get_item_desc(ThreadContext *thread, ListRef list, ShmInt itemindex, bo
 	return rslt;
 }
 
+// The only function that can return RESULT_INVALID as a valid result to indicate out of bound access
+// which is not a failure
 int
 shm_list_get_item_do(ThreadContext *thread, ListRef list, ShmInt index, ShmPointer *result, bool acquire)
 {
@@ -1972,9 +1974,13 @@ shm_list_append_consume(ThreadContext *thread, ListRef list, ShmPointer value, S
 
 // result is acquired
 int
-shm_list_popleft(ThreadContext *thread, ListRef list, ShmPointer *result)
+shm_list_popleft(ThreadContext *thread, ListRef list, ShmPointer *result, bool *valid)
 {
 	shm_pointer_empty(thread, result);
+	if (valid)
+		*valid = false;
+
+	shm_list_changes_check_inited(thread, list.local, NULL);
 
 	bool lock_taken = false;
 	if_failure(
@@ -1990,6 +1996,15 @@ shm_list_popleft(ThreadContext *thread, ListRef list, ShmPointer *result)
 	// We might consider checking all the blocks this way.
 
 	bool owned = true;
+	// similar to get_item_do
+	ShmListCounts count = shm_list_get_fast_count(thread, list.local, owned);
+
+	// Sleep(1000*1000); // producer_consumer.py leak trigger
+	if (count.count == 0)
+	{
+		transient_commit(thread);
+		return RESULT_OK;
+	}
 
 	shm_list__index_desc index_desc;
 	shm_list__block_desc block_desc = shm_list_get_item_desc(thread, list, 0, owned, &index_desc);
@@ -2054,6 +2069,8 @@ shm_list_popleft(ThreadContext *thread, ListRef list, ShmPointer *result)
 
 	transient_commit(thread);
 	shmassert(SBOOL(*result));
+	if (valid)
+		*valid = true;
 	return RESULT_OK;
 }
 
@@ -2069,7 +2086,10 @@ shm_list_commit(ThreadContext *thread, ShmList *list)
 	ShmListBlockRef first_block = {EMPTY_SHM, NULL};
 	ShmRefcountedBlock *top_block = LOCAL(list->top_block);
 	if (top_block == NULL)
-		shmassert(false);
+	{
+		ShmListCounts counts = shm_list_get_fast_count(thread, list, true);
+		shmassert(counts.count == 0 && counts.deleted == 0);
+	}
 	else if (SHM_TYPE_LIST_BLOCK == top_block->type)
 	{
 		first_block.local = (ShmListBlock *)top_block;

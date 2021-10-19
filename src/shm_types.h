@@ -851,7 +851,7 @@ shm_list_append(ThreadContext *thread, ListRef list, ShmPointer value, ShmInt *i
 int
 shm_list_append_consume(ThreadContext *thread, ListRef list, ShmPointer value, ShmInt *index);
 int
-shm_list_popleft(ThreadContext *thread, ListRef list, ShmPointer *result);
+shm_list_popleft(ThreadContext *thread, ListRef list, ShmPointer *result, bool *valid);
 void
 shm_list_print_to_file(FILE *file, ShmList *list);
 

@@ -904,7 +904,8 @@ test_list(ThreadContext *thread, ListRef *list, int kiterations, bool concurrent
 		if (iteration % 11 == 10)
 		{
 			ShmPointer popped_value = EMPTY_SHM;
-			CHECK_RETRY(shm_list_popleft(thread, *list, &popped_value), thread);
+			bool valid  = false;
+			CHECK_RETRY(shm_list_popleft(thread, *list, &popped_value, &valid), thread);
 			shmassert(SBOOL(popped_value));
 			shm_pointer_release(thread, popped_value);
 			deleted_count++;

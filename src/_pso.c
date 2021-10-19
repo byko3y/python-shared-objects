@@ -1384,7 +1384,7 @@ ShmList_repr(ShmListObject *self)
 				return NULL;
 			});
 
-		shmassert(value_shm != EMPTY_SHM || out_of_range == true);
+		shmassert((value_shm != EMPTY_SHM) == (out_of_range == false));
 		ShmValueHeader *first_value = LOCAL(value_shm);
 		value_shm = EMPTY_SHM;
 		// char *astr = "None";
@@ -1472,7 +1472,7 @@ ShmList_iter(PyObject *obj)
 }
 
 static PyObject*
-_shm_list_append(ShmListObject *self, PyObject *value) {
+ShmList_append(ShmListObject *self, PyObject *value) {
 	ListRef list;
 	list.shared = self->data;
 	list.local = LOCAL(self->data);
@@ -1521,6 +1521,33 @@ _shm_list_append(ShmListObject *self, PyObject *value) {
 	return PyLong_FromLong(index);
 }
 
+static PyObject *
+ShmList_popleft(PyObject* obj, PyObject *noargs)
+{
+	ShmListObject *self = (ShmListObject *)obj;
+	ListRef list;
+	if (!init_list_ref(self->data, &list))
+	{
+		PyErr_SetString(Shm_Exception, "Invalid list object");
+		return NULL;
+	}
+	ShmPointer value = EMPTY_SHM;
+	bool valid = false;
+	RETRY_LOOP(shm_list_popleft(thread, list, &value, &valid),
+		{ shmassert(value == EMPTY_SHM); },
+		{ return NULL; },
+		{
+			PyErr_SetString(Shm_Exception, "Internal failure in ShmList_popleft");
+			return NULL;
+		});
+	shmassert((value != EMPTY_SHM) == valid);
+	if (valid == false)
+		Py_RETURN_NONE;
+
+	PyObject *result_obj = shm_pointer_to_object_consume(value);
+	return result_obj;
+}
+
 static Py_ssize_t
 shm_list_length(ShmListObject *self)
 {
@@ -1564,7 +1591,7 @@ shm_list_item(ShmListObject* self, Py_ssize_t i)
 			PyErr_SetString(Shm_Exception, "Internal failure");
 			return NULL;
 		});
-	shmassert(value != EMPTY_SHM || out_of_range == true);
+	shmassert((value != EMPTY_SHM) == (out_of_range == false));
 	if (out_of_range)
 	{
 		PyErr_SetString(PyExc_IndexError, "list index out of range");
@@ -1638,7 +1665,6 @@ shm_list_ass_item(ShmListObject *self, Py_ssize_t i, PyObject *value)
 			return -1;
 		});
 
-	shmassert(newval != EMPTY_SHM || out_of_range == true);
 	if (out_of_range)
 	{
 		PyErr_SetString(PyExc_IndexError,
@@ -1689,9 +1715,14 @@ static PyMethodDef ShmList_methods[] = {
 	//     "Returns new value for use in the list."
 	// },
 	{
-		"append", (PyCFunction)_shm_list_append, METH_O,
+		"append", (PyCFunction)ShmList_append, METH_O,
 		"Appends a value to the list"
 	},
+	{
+		"popleft", ShmList_popleft, METH_NOARGS,
+		"Remove first element from list"
+	},
+
 	{NULL, NULL} // sentinel
 };
 
@@ -1770,7 +1801,7 @@ ShmListIter_next(ShmListIterObject *it)
 			return NULL;
 		});
 
-	shmassert(value != EMPTY_SHM || out_of_range == true);
+	shmassert((value != EMPTY_SHM) == (out_of_range == false));
 	if (out_of_range)
 		return NULL;
 
