@@ -9,10 +9,10 @@ class Queue(pso.ShmObject):
         this.deque = pso.ShmList()
         this.promise = pso.ShmPromise()
 
+    @pso.transaction
     def put(this, value):
-        with transaction:
-            this.deque.append(value)
-            this.promise.signal(True)
+        this.deque.append(value)
+        this.promise.signal(True)
 
     def pop(this):
         rslt = this.deque.popleft()
@@ -32,29 +32,25 @@ class Queue(pso.ShmObject):
 
 number_of_accounts = 200
 
-print('sys.argv: ', sys.argv)
-
 if len(sys.argv) != 3 or sys.argv[1] != 'worker':
     # main process
     coord_name = pso.init()
 
     pso.root().queue = queue = Queue()
 
-    worker_count = 1
+    worker_count = 3
     if len(sys.argv) >= 2:
         worker_count = int(sys.argv[1])
-    workers = [subprocess.Popen([sys.executable, '-m', 'pso', sys.argv[0], 'worker', coord_name])
+    workers = [subprocess.Popen([sys.executable, sys.argv[0], 'worker', coord_name])
         for i in range(worker_count)]
 
     items = []
     ends = 0
     while ends < worker_count:
-        #items.append(queue.pop())
         (item, eoq) = queue.pop()
         if eoq:
             ends += 1
         print(item)
-    #print('Got items: ', items)
 
     print(f'Queue object contention (r, w): {pso.get_contention_count(queue)}')
     print(f'ShmList contention (r, w): {pso.get_contention_count(queue.deque)}')
