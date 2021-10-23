@@ -128,8 +128,13 @@ connect_to_coordinator(PyObject *self, PyObject *args) {
 	if (!PyArg_ParseTuple(args, "s", &name)) {
 		return NULL;
 	}
-	debug_print("%d. Connecting to coordinator: %s!\n", ShmGetCurrentProcessId(), name);
+	debug_print("%d. Connecting to coordinator: %s\n", ShmGetCurrentProcessId(), name);
 	long rslt = init_superblock(name);
+	if (rslt != RESULT_OK)
+	{
+		PyErr_Format(Shm_Exception, "Failed to connect to coordinator %s\n", name);
+		return false;
+	}
 	init_thread_context(&thread);
 	debug_print("%d. Thread context inited\n", ShmGetCurrentProcessId());
 

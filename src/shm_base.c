@@ -41,11 +41,12 @@ void _make_filename(char *buf)
 	return;
 }
 
-void
+// ShmPointer-related superblock routines
+shminline void
 superblock_check_mmap_inited(int group_index)
 {
 	shmassert(group_index >= 0 && group_index < SHM_BLOCK_COUNT / SHM_BLOCK_GROUP_SIZE);
-	if (!superblock_mmap[group_index])
+	if (P_UNLIKELY(!superblock_mmap[group_index]))
 	{
 		// block not mapped into memory yet
 		ChunkAllocationResult alloc_result  = shm_chunk_allocate((__ShmChunk*)&superblock->block_groups[group_index], false, SHM_FIXED_CHUNK_SIZE * SHM_BLOCK_GROUP_SIZE);
@@ -69,14 +70,14 @@ superblock_release_all_mmaps(bool is_coordinator)
 	}
 }
 
-vl void *
+shminline vl void *
 superblock_get_block(int index)
 {
-	if (!superblock)
+	if (P_UNLIKELY(!superblock))
 		return NULL;
 	int group_index = index / SHM_BLOCK_GROUP_SIZE;
 	int itemindex = index % SHM_BLOCK_GROUP_SIZE;
-	if (index >= superblock->block_count)
+	if (P_UNLIKELY(index >= superblock->block_count))
 	{
 		shmassert(false);
 		return NULL;
@@ -97,6 +98,164 @@ superblock_get_block_noside(int index)
 	shmassert(superblock_mmap[group_index]);
 	return superblock_mmap[group_index] + itemindex * SHM_FIXED_CHUNK_SIZE;
 }
+
+// ShmPointer routines
+
+shminline ShmWord
+shm_pointer_get_block(ShmPointer pntr)
+{
+	return (pntr) >> SHM_OFFSET_BITS;
+}
+
+shminline ShmWord
+shm_pointer_get_offset(ShmPointer pntr)
+{
+	return (pntr) & SHM_INVALID_OFFSET; // 18 bits
+}
+
+shminline bool
+shm_pointer_is_valid(ShmPointer pntr)
+{
+	return SBOOL(pntr) && shm_pointer_get_offset(pntr) != SHM_INVALID_OFFSET &&
+	       shm_pointer_get_offset(pntr) > SHM_FIXED_CHUNK_HEADER_SIZE; // only internal routines can read the header
+}
+
+shminline bool
+SBOOL(ShmPointer pntr)
+{
+	return shm_pointer_get_block(pntr) != SHM_INVALID_BLOCK && pntr != NONE_SHM;
+}
+
+void *
+shm_pointer_to_pointer_root(ShmPointer pntr)
+{
+	ShmWord idx = shm_pointer_get_block(pntr);
+	vl char *block;
+	if (idx == SHM_INVALID_BLOCK)
+		block = (vl char *)superblock;
+	else
+	{
+		// block = superblock_get_block(idx);
+		block = NULL;
+		shmassert(false);
+	}
+
+	if (!block)
+		return NULL;
+	ShmWord offset = shm_pointer_get_offset(pntr);
+	if (idx == SHM_INVALID_BLOCK)
+	{
+		shmassert(offset < isizeof(ShmSuperblock));
+		if (offset >= isizeof(ShmSuperblock))
+			return NULL;
+	}
+	else
+	{
+		// shmassert(offset < superblock->blocks[idx].size, NULL);
+		// if (offset >= superblock->blocks[idx].size)
+		// 	return NULL;
+
+		shmassert(offset < SHM_FIXED_CHUNK_SIZE);
+		if (offset >= SHM_FIXED_CHUNK_SIZE)
+			return NULL;
+	}
+	return CAST_VL(block + offset);
+}
+
+shminline void *
+shm_pointer_to_pointer_unsafe(ShmPointer pntr)
+{
+	ShmWord idx = shm_pointer_get_block(pntr);
+	vl char *block;
+	if (P_UNLIKELY(idx == SHM_INVALID_BLOCK))
+		return NULL;
+	else
+		block = superblock_get_block(idx);
+
+	if (P_UNLIKELY(!block))
+		return NULL;
+
+	ShmWord offset = shm_pointer_get_offset(pntr);
+	if (P_UNLIKELY(idx == SHM_INVALID_BLOCK))
+		return NULL;
+	else
+	{
+		shmassert(offset < SHM_FIXED_CHUNK_SIZE);
+		if (offset >= SHM_FIXED_CHUNK_SIZE)
+			return NULL;
+	}
+	return CAST_VL(block + offset);
+}
+
+inline void *
+shm_pointer_to_pointer(ShmPointer pntr)
+{
+	if (P_UNLIKELY(!shm_pointer_is_valid(pntr)))
+		return NULL;
+	return shm_pointer_to_pointer_unsafe(pntr);
+}
+
+
+void *
+shm_pointer_to_pointer_no_side(ShmPointer pntr)
+{
+	ShmWord idx = shm_pointer_get_block(pntr);
+	vl char *block;
+	block = superblock_mmap[idx / SHM_BLOCK_GROUP_SIZE];
+	if (!block)
+		return NULL;
+
+	ShmWord offset = shm_pointer_get_offset(pntr);
+	if (idx == SHM_INVALID_BLOCK)
+	{
+		return NULL;
+	}
+	else
+	{
+		// shmassert(offset < superblock->blocks[idx].size, NULL);
+		// if (offset >= superblock->blocks[idx].size)
+		// 	return NULL;
+		shmassert(offset < SHM_FIXED_CHUNK_SIZE);
+		if (offset >= SHM_FIXED_CHUNK_SIZE)
+			return NULL;
+	}
+	return CAST_VL(block + SHM_FIXED_CHUNK_SIZE * (idx % SHM_BLOCK_GROUP_SIZE) + offset);
+}
+
+ShmPointer
+pack_shm_pointer(ShmWord offset, ShmWord block)
+{
+	shmassert(offset >= 0);
+	shmassert(offset <= SHM_INVALID_OFFSET);
+	shmassert(block >= 0);
+	shmassert(block <= SHM_INVALID_BLOCK);
+	uintptr_t _offset = (uintptr_t)offset & SHM_INVALID_OFFSET;
+	uintptr_t _block = (uintptr_t)block & SHM_INVALID_BLOCK;
+	return (_block << SHM_OFFSET_BITS) | _offset;
+}
+
+ShmPointer
+pointer_to_shm_pointer(void *pntr, int block)
+{
+	shmassert(block <= SHM_INVALID_BLOCK);
+	vl char *block_base = superblock_get_block_noside(block);
+	int offset = (char*)pntr - block_base;
+	shmassert(offset >= 0);
+	shmassert(offset < SHM_FIXED_CHUNK_SIZE);
+	return pack_shm_pointer(offset, block);
+}
+
+ShmPointer
+shm_pointer_shift(ShmPointer pointer, int offset)
+{
+	int block = shm_pointer_get_block(pointer);
+	int orig_offset = shm_pointer_get_offset(pointer);
+	orig_offset = orig_offset + offset;
+	if (orig_offset >= SHM_INVALID_OFFSET)
+		return EMPTY_SHM;
+	return pack_shm_pointer(orig_offset, block);
+}
+// End of ShmPointer routines
 
 #define thread_debug_register_line() do {\
 	self->private_data->last_writer_lock = lock->writer_lock; \
@@ -769,6 +928,7 @@ take_write_lock__checks(ThreadContext *self, ShmLock *lock, ShmPointer container
 }
 
 // Last modification 26.08.2020
+// Warning: this description is outdated and only provides some general insights on the idea.
 // RESULT_WAIT means there are low priority writers still holding the lock and we need to wait for them to abort e.g. Sleep(0), yield(), ShmEvent.
 // RESULT_REPEAT means something changed and we need to rerun this function.
 // RESULT_ABORT means there are high priority threads or we just have to abort anyway.
@@ -2481,164 +2641,6 @@ shm_thread_reset_debug_counters(ThreadContext *thread)
 	thread->private_data->times_read_aborted = 0;
 	thread->private_data->tickets_read_aborted = 0;
 }
-
-// ShmPointer routines
-
-ShmWord
-shm_pointer_get_block(ShmPointer pntr)
-{
-	return (pntr) >> SHM_OFFSET_BITS;
-}
-
-ShmWord
-shm_pointer_get_offset(ShmPointer pntr)
-{
-	return (pntr) & SHM_INVALID_OFFSET; // 18 bits
-}
-
-bool
-shm_pointer_is_valid(ShmPointer pntr)
-{
-	return SBOOL(pntr) && shm_pointer_get_offset(pntr) != SHM_INVALID_OFFSET &&
-	       shm_pointer_get_offset(pntr) > SHM_FIXED_CHUNK_HEADER_SIZE; // only internal routines can read the header
-}
-
-bool
-SBOOL(ShmPointer pntr)
-{
-	return shm_pointer_get_block(pntr) != SHM_INVALID_BLOCK && pntr != NONE_SHM;
-}
-
-void *
-shm_pointer_to_pointer_root(ShmPointer pntr)
-{
-	ShmWord idx = shm_pointer_get_block(pntr);
-	vl char *block;
-	if (idx == SHM_INVALID_BLOCK)
-		block = (vl char *)superblock;
-	else
-	{
-		// block = superblock_get_block(idx);
-		block = NULL;
-		shmassert(false);
-	}
-
-	if (!block)
-		return NULL;
-	ShmWord offset = shm_pointer_get_offset(pntr);
-	if (idx == SHM_INVALID_BLOCK)
-	{
-		shmassert(offset < isizeof(ShmSuperblock));
-		if (offset >= isizeof(ShmSuperblock))
-			return NULL;
-	}
-	else
-	{
-		// shmassert(offset < superblock->blocks[idx].size, NULL);
-		// if (offset >= superblock->blocks[idx].size)
-		// 	return NULL;
-
-		shmassert(offset < SHM_FIXED_CHUNK_SIZE);
-		if (offset >= SHM_FIXED_CHUNK_SIZE)
-			return NULL;
-	}
-	return CAST_VL(block + offset);
-}
-
-void *
-shm_pointer_to_pointer_unsafe(ShmPointer pntr)
-{
-	ShmWord idx = shm_pointer_get_block(pntr);
-	vl char *block;
-	if (idx == SHM_INVALID_BLOCK)
-		return NULL;
-	else
-		block = superblock_get_block(idx);
-
-	if (!block)
-		return NULL;
-
-	ShmWord offset = shm_pointer_get_offset(pntr);
-	if (idx == SHM_INVALID_BLOCK)
-		return NULL;
-	else
-	{
-		shmassert(offset < SHM_FIXED_CHUNK_SIZE);
-		if (offset >= SHM_FIXED_CHUNK_SIZE)
-			return NULL;
-	}
-	return CAST_VL(block + offset);
-}
-
-void *
-shm_pointer_to_pointer(ShmPointer pntr)
-{
-	if (!shm_pointer_is_valid(pntr))
-		return NULL;
-	return shm_pointer_to_pointer_unsafe(pntr);
-}
-
-
-void *
-shm_pointer_to_pointer_no_side(ShmPointer pntr)
-{
-	ShmWord idx = shm_pointer_get_block(pntr);
-	vl char *block;
-	block = superblock_mmap[idx / SHM_BLOCK_GROUP_SIZE];
-	if (!block)
-		return NULL;
-
-	ShmWord offset = shm_pointer_get_offset(pntr);
-	if (idx == SHM_INVALID_BLOCK)
-	{
-		return NULL;
-	}
-	else
-	{
-		// shmassert(offset < superblock->blocks[idx].size, NULL);
-		// if (offset >= superblock->blocks[idx].size)
-		// 	return NULL;
-		shmassert(offset < SHM_FIXED_CHUNK_SIZE);
-		if (offset >= SHM_FIXED_CHUNK_SIZE)
-			return NULL;
-	}
-	return CAST_VL(block + SHM_FIXED_CHUNK_SIZE * (idx % SHM_BLOCK_GROUP_SIZE) + offset);
-}
-
-ShmPointer
-pack_shm_pointer(ShmWord offset, ShmWord block)
-{
-	shmassert(offset >= 0);
-	shmassert(offset <= SHM_INVALID_OFFSET);
-	shmassert(block >= 0);
-	shmassert(block <= SHM_INVALID_BLOCK);
-	uintptr_t _offset = (uintptr_t)offset & SHM_INVALID_OFFSET;
-	uintptr_t _block = (uintptr_t)block & SHM_INVALID_BLOCK;
-	return (_block << SHM_OFFSET_BITS) | _offset;
-}
-
-ShmPointer
-pointer_to_shm_pointer(void *pntr, int block)
-{
-	shmassert(block <= SHM_INVALID_BLOCK);
-	vl char *block_base = superblock_get_block_noside(block);
-	int offset = (char*)pntr - block_base;
-	shmassert(offset >= 0);
-	shmassert(offset < SHM_FIXED_CHUNK_SIZE);
-	return pack_shm_pointer(offset, block);
-}
-
-ShmPointer
-shm_pointer_shift(ShmPointer pointer, int offset)
-{
-	int block = shm_pointer_get_block(pointer);
-	int orig_offset = shm_pointer_get_offset(pointer);
-	orig_offset = orig_offset + offset;
-	if (orig_offset >= SHM_INVALID_OFFSET)
-		return EMPTY_SHM;
-	return pack_shm_pointer(orig_offset, block);
-}
-// End of ShmPointer routines
 
 vl char *
 debug_id_to_str(int id)

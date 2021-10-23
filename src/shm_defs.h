@@ -53,6 +53,9 @@
 
 #define vl volatile
 #define vl2 
+// naive ShmPointer routines inlining is not very efficient
+// (approx x1.3 accounts.py run time with shmassertions enabled)
+#define shminline inline
 
 typedef pint ShmInt; // Small aligned integer value for atomic access
 					 // typedef vl __ShmPointer ShmPointer;

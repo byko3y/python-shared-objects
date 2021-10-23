@@ -153,8 +153,19 @@ DebugPauseAll(void)
 }
 
 extern void _shmassert(bool condition, char *condition_msg, char *message, char *file, int line);
-#define shmassert(condition) _shmassert((condition), (#condition), NULL, __FILE__, __LINE__)
-#define shmassert_msg(condition, message) _shmassert((condition), (#condition), (message), __FILE__, __LINE__)
+// disabling assertions will give x1.10-1.15 speedup
+// (measured without ShmPointer inlines, x1.15 with zero contentions, x1.10 with occasional contentions)
+#ifdef SHM_NOASSERT
+	#define shmassert(condition)
+	#define shmassert_msg(condition, message)
+#else
+	#define shmassert(condition) do { \
+			if (P_UNLIKELY(!(condition))) _shmassert((condition), (#condition), NULL, __FILE__, __LINE__); \
+		} while (false)
+	#define shmassert_msg(condition, message) do { \
+			if (P_UNLIKELY(!(condition))) _shmassert((condition), (#condition), (message), __FILE__, __LINE__); \
+		} while (false)
+#endif
 
 #define DEBUG_LOCK 0
 #define DEBUG_SHM_EVENTS true
