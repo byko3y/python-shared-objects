@@ -20,5 +20,5 @@ else:
     myrequest = pso.root().requests[myindex]
     import time, random
     time.sleep(random.randrange(2)) # imitate some long work
-    pso.root().responses[myindex] =
+    pso.root().responses[myindex] = \
         (myindex, f'response {myindex} for {myrequest["request"]}')

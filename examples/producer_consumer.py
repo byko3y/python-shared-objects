@@ -52,8 +52,6 @@ if len(sys.argv) != 3 or sys.argv[1] != 'worker':
             ends += 1
         print(item)
 
-    print(f'Queue object contention (r, w): {pso.get_contention_count(queue)}')
-    print(f'ShmList contention (r, w): {pso.get_contention_count(queue.deque)}')
     print(f'ShmList final state: {list(queue.deque)}')
     statuses = [w.wait(None) for w in workers]
     input("Press Enter to continue...")
