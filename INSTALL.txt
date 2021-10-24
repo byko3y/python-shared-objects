@@ -1,18 +1,22 @@
 The extension should be compatible with CPython 3.7 and 3.8, no other versions were tested.
-Only Linux and Windows OS are supported currently. This is due to complications with support of events in multiprocess environments: Linux provides an easy to use futex, while Windows has CreateEvent.
-32-bit mode is supported only. You might successfully build it on 64 bit but the extension will only be able to use 4GB of shared memory due to tricky address translation.
+
+Only Linux and Windows OS are supported currently. This is due to complications with support
+of events in multiprocess environments: Linux provides an easy to use futex, while Windows has CreateEvent.
+
+32-bit mode is supported only. You might successfully build it on 64 bit but the extension will only be
+able to use 4GB of shared memory due to tricky address translation.
 
 To build the extension you need to have CPython development libraries available e.g. for Debian:
 
-apt-get install python3-all-dev python3-distutils
+    apt-get install python3-all-dev python3-distutils
 
 To build and install locally, use:
 
-python3 setup.py install
+    python3 setup.py install
 
 For development/testing purpose you might consider inplace setup, where binaries will appear in /src folder and optimization is disabled:
 
-python3 setup.py build_ext --inplace --debug
+    python3 setup.py build_ext --inplace --debug
 
 "build_ext" is a preferable way to build the debug configuration because distutils does not support "--inplace" switch.
 
@@ -20,12 +24,12 @@ Currently the correctness of the code is verified mostly through internal assert
 
 Lower level test has the form of standalone program which is compiled with:
 
-python3 setup.py build_test
+    python3 setup.py build_test
 
 This command also accepts optional "--inplace" and "--debug" switches with effects similar to build_ext, although with "--inplace" it yields executable binary in the /src folder instead of /tests. For example you might run:
 
-python3 setup.py build_test --inplace && ./src/pso_test
+    python3 setup.py build_test --inplace && ./src/pso_test
 
 Higher level test requires a compiled CPython extension in the path and a pso.py module to run. For inplace testing use:
 
-python3 setup.py build_ext --inplace --debug && export PYTHONPATH="$PWD/src" && python3 tests/run.py
+    python3 setup.py build_ext --inplace --debug && export PYTHONPATH="$PWD/src" && python3 tests/run.py && python3 -m pso tests/accounts.py
