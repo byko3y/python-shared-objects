@@ -14,19 +14,24 @@ To build and install locally, use:
 
     python3 setup.py install
 
-For development/testing purpose you might consider inplace setup, where binaries will appear in /src folder and optimization is disabled:
+For development/testing purpose you might consider inplace setup, where binaries will appear in /src folder
+and optimization is disabled:
 
     python3 setup.py build_ext --inplace --debug
 
 "build_ext" is a preferable way to build the debug configuration because distutils does not support "--inplace" switch.
 
-Currently the correctness of the code is verified mostly through internal assertions instead of external output verification. To trigger these internal assertions there exist two tests in the /tests folder: lower level for testing the language-independant code (tests/test.c) and higher level for testing CPython extension (tests/pso.py and tests/test1.pso.py).
+Currently the correctness of the code is verified mostly through internal assertions instead of external
+output verification. To trigger these internal assertions there exist two tests in the /tests folder:
+- lower level for testing the language-independant code (tests/test.c);
+- higher level for testing CPython extension (tests/pso.py and tests/test1.pso.py).
 
 Lower level test has the form of standalone program which is compiled with:
 
     python3 setup.py build_test
 
-This command also accepts optional "--inplace" and "--debug" switches with effects similar to build_ext, although with "--inplace" it yields executable binary in the /src folder instead of /tests. For example you might run:
+This command also accepts optional "--inplace" and "--debug" switches with effects similar to build_ext,
+although with "--inplace" it yields executable binary in the /src folder instead of /tests. For example you might run:
 
     python3 setup.py build_test --inplace && ./src/pso_test
 
