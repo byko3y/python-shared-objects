@@ -18,6 +18,7 @@ The final goal is to allow creation of multiprocess servers with minimal relianc
 * https://en.wikipedia.org/wiki/Zope_Object_Database - pickle-based client-server.
 * lmdb - shared memory storage with MVCC that makes a smart use of unified buffer cache of most modern OS-es to protect the shared storage: mmaped read-only data is read with zero-copying, while writes are performed with pwrite/writev in special routines, that's why no random writes would corrupt the persistent storage. Disadvantages: serialized-only writes, single key-value model of storage (hence no dict, no list, no object, etc), it really loves to eat memory for its large history of append/removes. Also, there also exists binding for python: https://pypi.org/project/pynndb/
 * https://ray.io/ - interesting library for implementating not only multitasking, but also distributed systems. Although quiet ad-hoc and requires significant rework of you codebase to covert it into distributed ray-based system.
+* https://slimmer-ai.github.io/mpire/index.html - MPIRE, looking suspiciously similar to Ray, but without a remote connection support.
 
 ## Goals
 
