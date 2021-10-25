@@ -4,6 +4,8 @@ This is my alternative to channels and pickle for cross-interpreter communicatio
 
 See [INSTALL.txt](INSTALL.txt) for instructions on setup. Only 32-bit Linux or Windows are supported, and probably CPython 3.7+. It's still kinda proof-of-concept, so don't expect too much from it.
 
+https://habr.com/en/post/585320/ - Detailed article with examples, benchmarks, and review of implementation details.
+
 #### Brief tutorial on usage
 
 1. Import the library using ```import pso```;
