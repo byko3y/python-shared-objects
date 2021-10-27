@@ -2,7 +2,7 @@ CPython extension implementing Shared Transactional Memory with native-looking i
 
 This is my alternative to channels and pickle for cross-interpreter communication for the ongoing [PEP 554 -- Multiple Interpreters in the Stdlib](https://www.python.org/dev/peps/pep-0554/) and [multi-core-python](https://github.com/ericsnowcurrently/multi-core-python). Treat this project as a deep rework of a standard multiprocessing.sharedctypes, intended to implement a support for complex dynamic data and complex atomic operations.
 
-See [INSTALL.txt](INSTALL.txt) for instructions on setup. Only 32-bit Linux or Windows are supported, and probably CPython 3.7+. It's still kinda proof-of-concept, so don't expect too much from it.
+See [INSTALL.txt](INSTALL.txt) for instructions on setup. Only 32-bit Linux or Windows are supported right now (64-bit support is on its way), and probably CPython 3.7+. It's still kinda proof-of-concept, so don't expect too much from it.
 
 https://habr.com/en/post/585320/ - Detailed article with examples, benchmarks, and review of implementation details.
 
