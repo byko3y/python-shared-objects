@@ -1379,9 +1379,6 @@ init_dict_ref(ShmPointer cell_shm, DictRef *cell);
 bool
 init_undict_ref(ShmPointer cell_shm, UnDictRef *cell);
 
-int align_higher(ShmInt value, ShmInt bits);
-int align_lower(ShmInt value, ShmInt bits);
-
 // Memory manager
 void
 init_mm_maps(void);
