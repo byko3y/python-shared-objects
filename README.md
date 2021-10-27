@@ -6,6 +6,11 @@ See [INSTALL.txt](INSTALL.txt) for instructions on setup. Only 32-bit Linux or W
 
 https://habr.com/en/post/585320/ - Detailed article with examples, benchmarks, and review of implementation details.
 
+You can find example programs in the ```examples/``` folder, those are launched from the project's root using the following commands:  
+python3 [examples/simple_workers.py](examples/simple_workers.py)  
+python3 -m pso [examples/accounts.pso.py](examples/accounts.pso.py)  
+python3 [examples/producer_consumer.py](examples/producer_consumer.py)  
+
 #### Brief tutorial on usage
 
 1. Import the library using ```import pso```;
@@ -62,8 +67,3 @@ with transaction:
 ```
 
 This syntactic sugar requires a special module loader, activated either by running ```python3 -m pso modulename.py``` or by naming a loaded module with a ```.pso``` suffix, like ```modulename.pso.py```. The latter option is only available once the "pso" module is loaded, so it won't work for the main module of your project.
-
-You can find example programs in the ```examples/``` folder, those are launched from the project's root using the following commands:  
-python3 [examples/simple_workers.py](examples/simple_workers.py)  
-python3 -m pso [examples/accounts.pso.py](examples/accounts.pso.py)  
-python3 [examples/producer_consumer.py](examples/producer_consumer.py)  
