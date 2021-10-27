@@ -3,9 +3,6 @@ The extension should be compatible with CPython 3.7 and 3.8, no other versions w
 Only Linux and Windows OS are supported currently. This is due to complications with support
 of events in multiprocess environments: Linux provides an easy to use futex, while Windows has CreateEvent.
 
-32-bit mode is supported only. You might successfully build it on 64 bit but the extension will only be
-able to use 4GB of shared memory due to tricky address translation.
-
 To build the extension you need to have CPython development libraries available e.g. for Debian:
 
     apt-get install python3-all-dev python3-distutils
