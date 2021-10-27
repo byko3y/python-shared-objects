@@ -1357,7 +1357,7 @@ shm_pointer_shift(ShmPointer value, int offset);
 
 // ShmInt is usually 32 bit, while ShmPointer is 32 or 64
 ShmPointer
-pack_shm_pointer(int offset, int block);
+pack_shm_pointer(ShmWord offset, ShmWord block);
 ShmPointer
 pointer_to_shm_pointer(void *pntr, int block);
 
