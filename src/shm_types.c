@@ -1618,7 +1618,9 @@ ShmListBlock *
 shm_list_new_block(ThreadContext *thread, ShmList *list, ShmPointer *result_shm, int capacity, int debug_id)
 {
 	// this alignment assumption might actually fail for 64 bits
-	int block_size = isizeof(ShmListBlockHeader) + isizeof(ShmListCell) * capacity;
+	// int block_size = isizeof(ShmListBlockHeader) + isizeof(ShmListCell) * capacity;
+	// It did fail.
+	int block_size = SHM_LIST_BLOCK_HEADER_SIZE + isizeof(ShmListCell) * capacity;
 	ShmListBlock* rslt = new_shm_refcounted_block(thread, result_shm, block_size, SHM_TYPE_LIST_BLOCK, debug_id);
 	memset(CAST_VL(&rslt->cells[0]), EMPTY_SHM, isizeof(ShmListCell) * capacity);
 	rslt->capacity = capacity;
@@ -1644,7 +1646,7 @@ shm_list_max_index_size() {
 static ShmInt
 shm_list_max_block_capacity()
 {
-	return (medium_size_map[4] - isizeof(ShmListBlockHeader)) / isizeof(ShmListCell);
+	return (medium_size_map[4] - SHM_LIST_BLOCK_HEADER_SIZE) / isizeof(ShmListCell);
 }
 
 ShmList *
@@ -1899,8 +1901,8 @@ shm_list_append_do(ThreadContext *thread, ListRef list, ShmPointer value, bool c
 					new_capacity = max_block_capacity;
 
 				ShmPointer new_tail_shm = EMPTY_SHM;
-				int block_size = isizeof(ShmListBlockHeader) + isizeof(ShmListCell) * new_capacity;
-				int old_block_size = isizeof(ShmListBlockHeader) + isizeof(ShmListCell) * old_capacity;
+				int block_size = SHM_LIST_BLOCK_HEADER_SIZE + isizeof(ShmListCell) * new_capacity;
+				int old_block_size = SHM_LIST_BLOCK_HEADER_SIZE + isizeof(ShmListCell) * old_capacity;
 				shmassert(old_block_size < block_size);
 				ShmListBlock *old_tail_block = tail_block;
 				shmassert(index_desc.block_shm != EMPTY_SHM);

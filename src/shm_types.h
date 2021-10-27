@@ -121,7 +121,7 @@ CAS2(vl ShmInt *data, ShmInt new_value, ShmInt old_value)
 #endif
 
 // intrin.h/x86intrin.h
-static inline uint64_t rdtsc() {
+static inline uint64_t rdtsc(void) {
 	return __rdtsc();
 }
 
@@ -508,7 +508,7 @@ atomic_bitmap_thread_mask(int index)
 static inline bool
 atomic_bitmap_set(volatile ShmReaderBitmap *p, int index)
 {
-	shmassert(index < 64 && index >= 0);
+	shmassert(index < isizeof(ShmReaderBitmap)*8 && index >= 0);
 	if (atomic_bitmap_check_me(p, index))
 		return true;
 	else
@@ -533,7 +533,7 @@ atomic_bitmap_set(volatile ShmReaderBitmap *p, int index)
 static inline bool
 atomic_bitmap_reset(volatile ShmReaderBitmap *p, int index)
 {
-	shmassert(index < 64 && index >= 0);
+	shmassert(index < isizeof(ShmReaderBitmap)*8 && index >= 0);
 	if (!atomic_bitmap_check_me(p, index))
 		return false;
 	else
@@ -653,8 +653,8 @@ shm_promise_finalize(ThreadContext *thread, PromiseRef promise);
 typedef vl struct
 {
 	ShmPointer  data;
-	bool        has_new_data;
 	ShmPointer  new_data;
+	bool        has_new_data;
 } ShmCellBase;
 
 typedef vl struct _ShmCell
@@ -662,8 +662,8 @@ typedef vl struct _ShmCell
 	SHM_CONTAINER
 	// ShmCell/ShmCellBase
 	ShmPointer  data;
-	bool        has_new_data;
 	ShmPointer  new_data;
+	bool        has_new_data;
 } ShmCell;
 
 typedef vl struct _ShmQueueCell
@@ -671,8 +671,8 @@ typedef vl struct _ShmQueueCell
 	SHM_CONTAINER
 	// ShmCell
 	ShmPointer  data;
-	ShmInt      has_new_data;
 	ShmPointer  new_data;
+	ShmInt      has_new_data;
 	// ShmQueueCell
 	ShmPointer next;
 	ShmPointer new_next; // NONE_SHM for unused, EMPTY_SHM for "set next to EMPTY_SHM"
@@ -723,8 +723,8 @@ typedef vl struct _ShmListCell
 	SHM_CONTAINED_BLOCK
 	// ShmCellBase
 	ShmPointer  data;
-	ShmInt      has_new_data;
 	ShmPointer  new_data;
+	ShmInt      has_new_data;
 	// ShmListCell
 	ShmInt changed; // for committing, to avoid registering changes for same cell twice
 } ShmListCell;
@@ -739,7 +739,7 @@ typedef vl struct _ShmListBlockHeader
 	ShmInt new_deleted;
 	ShmInt count_added_after_relocation;
 	ShmInt capacity;
-} ShmListBlockHeader;
+} ShmListBlockHeader_legacy;
 
 typedef vl struct _ShmListBlock
 {
@@ -754,6 +754,8 @@ typedef vl struct _ShmListBlock
 	ShmInt capacity; // count + deleted <= capacity
 	ShmListCell cells[P_MAXINT / sizeof(ShmListCell) / 2];
 } ShmListBlock;
+
+#define SHM_LIST_BLOCK_HEADER_SIZE offsetof(ShmListBlock, cells[0])
 
 // For simplicity block can only grow in size. Thus any transaction attempting to append elements first reallocates ShmListBlock
 // and then either commits or rolls back changes, but the new block stays in this field in both cases, so ShmListChangeItem can unambigously point to the modified item.
@@ -1351,7 +1353,7 @@ void *
 shm_pointer_to_pointer(ShmPointer pntr);
 
 ShmPointer
-shm_pointer_shift(ShmPointer value, int offset);
+shm_pointer_shift(ShmPointer value, ShmWord offset);
 
 #define LOCAL(x)  shm_pointer_to_pointer(x)
 
@@ -1359,7 +1361,7 @@ shm_pointer_shift(ShmPointer value, int offset);
 ShmPointer
 pack_shm_pointer(ShmWord offset, ShmWord block);
 ShmPointer
-pointer_to_shm_pointer(void *pntr, int block);
+pointer_to_shm_pointer(void *pntr, ShmWord block);
 
 ///////////////////////////////////
 

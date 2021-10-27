@@ -110,13 +110,14 @@ shm_pointer_get_block(ShmPointer pntr)
 shminline ShmWord
 shm_pointer_get_offset(ShmPointer pntr)
 {
-	return (pntr) & SHM_INVALID_OFFSET; // 18 bits
+	return (pntr) & SHM_INVALID_OFFSET; // 20 bits
 }
 
 shminline bool
 shm_pointer_is_valid(ShmPointer pntr)
 {
-	return SBOOL(pntr) && shm_pointer_get_offset(pntr) != SHM_INVALID_OFFSET &&
+	ShmWord block = shm_pointer_get_block(pntr);
+	return block >= 0 && block <= SHM_MAX_BLOCK && pntr != NONE_SHM && shm_pointer_get_offset(pntr) != SHM_INVALID_OFFSET &&
 	       shm_pointer_get_offset(pntr) > SHM_FIXED_CHUNK_HEADER_SIZE; // only internal routines can read the header
 }
 
@@ -167,7 +168,7 @@ shm_pointer_to_pointer_unsafe(ShmPointer pntr)
 {
 	ShmWord idx = shm_pointer_get_block(pntr);
 	vl char *block;
-	if (P_UNLIKELY(idx == SHM_INVALID_BLOCK))
+	if (P_UNLIKELY(idx < 0 || idx > SHM_MAX_BLOCK))
 		return NULL;
 	else
 		block = superblock_get_block(idx);
@@ -176,7 +177,7 @@ shm_pointer_to_pointer_unsafe(ShmPointer pntr)
 		return NULL;
 
 	ShmWord offset = shm_pointer_get_offset(pntr);
-	if (P_UNLIKELY(idx == SHM_INVALID_BLOCK))
+	if (P_UNLIKELY(idx < 0 || idx >= SHM_MAX_BLOCK))
 		return NULL;
 	else
 	{
@@ -206,7 +207,7 @@ shm_pointer_to_pointer_no_side(ShmPointer pntr)
 		return NULL;
 
 	ShmWord offset = shm_pointer_get_offset(pntr);
-	if (idx == SHM_INVALID_BLOCK)
+	if (idx < 0 || idx > SHM_MAX_BLOCK)
 	{
 		return NULL;
 	}
@@ -226,32 +227,32 @@ ShmPointer
 pack_shm_pointer(ShmWord offset, ShmWord block)
 {
 	shmassert(offset >= 0);
-	shmassert(offset <= SHM_INVALID_OFFSET);
+	shmassert(offset <= (ShmWord)SHM_INVALID_OFFSET);
 	shmassert(block >= 0);
-	shmassert(block <= SHM_INVALID_BLOCK);
+	shmassert(block <= SHM_MAX_BLOCK || block == SHM_INVALID_BLOCK);
 	uintptr_t _offset = (uintptr_t)offset & SHM_INVALID_OFFSET;
 	uintptr_t _block = (uintptr_t)block & SHM_INVALID_BLOCK;
 	return (_block << SHM_OFFSET_BITS) | _offset;
 }
 
 ShmPointer
-pointer_to_shm_pointer(void *pntr, int block)
+pointer_to_shm_pointer(void *pntr, ShmWord block)
 {
-	shmassert(block <= SHM_INVALID_BLOCK);
+	shmassert(block <= SHM_MAX_BLOCK);
 	vl char *block_base = superblock_get_block_noside(block);
-	int offset = (char*)pntr - block_base;
+	ShmWord offset = (char*)pntr - block_base;
 	shmassert(offset >= 0);
 	shmassert(offset < SHM_FIXED_CHUNK_SIZE);
 	return pack_shm_pointer(offset, block);
 }
 
 ShmPointer
-shm_pointer_shift(ShmPointer pointer, int offset)
+shm_pointer_shift(ShmPointer pointer, ShmWord offset)
 {
-	int block = shm_pointer_get_block(pointer);
-	int orig_offset = shm_pointer_get_offset(pointer);
+	ShmWord block = shm_pointer_get_block(pointer);
+	ShmWord orig_offset = shm_pointer_get_offset(pointer);
 	orig_offset = orig_offset + offset;
-	if (orig_offset >= SHM_INVALID_OFFSET)
+	if (orig_offset >= (ShmWord)SHM_INVALID_OFFSET)
 		return EMPTY_SHM;
 	return pack_shm_pointer(orig_offset, block);
 }
@@ -384,9 +385,9 @@ shm_thread_start_compare(ShmInt thread1, ShmInt thread2)
 	if (thread1 == 0 || thread2 == 0 || thread1 == thread2)
 		return 0;
 	else if (thread1 - thread2 > 0)
-		return 1;
+		return COMPARED_LOW_HIGH;
 	else
-		return -1;
+		return COMPARED_HIGH_LOW;
 }
 
 ThreadContext *
@@ -756,7 +757,7 @@ next_writer_get_last_start(ShmPointer next_writer)
 bool
 atomic_bitmap_has_higher_priority(ShmReaderBitmap contenders, ShmInt last_start)
 {
-	for (int i = 0; i < 64; ++i)
+	for (int i = 0; i < isizeof(ShmReaderBitmap)*8; ++i)
 	{
 		if ((contenders & (UINT64_C(1) << i)) != 0)
 		{
@@ -790,7 +791,7 @@ preempt_readers(ThreadContext *self, ShmLock *lock)
 	ShmReaderBitmap signalled_readers = 0;
 	ShmInt myindex = self->index;
 	SHM_UNUSED(myindex);
-	for (int idx = 0; idx < 64; ++idx)
+	for (int idx = 0; idx < isizeof(ShmReaderBitmap)*8; ++idx)
 	{
 		// contenders exclude the current thread (self->index)
 		if (atomic_bitmap_check_me(&contenders, idx))
@@ -873,7 +874,7 @@ take_write_lock__checks(ThreadContext *self, ShmLock *lock, ShmPointer container
 	{
 		// don't even try to get the lock in case there are higher priority locks
 		ShmReaderBitmap contenders = atomic_bitmap_contenders(&lock->reader_lock, self->index);
-		for (int i = 0; i < 64; ++i)
+		for (int i = 0; i < isizeof(ShmReaderBitmap)*8; ++i)
 		{
 			if ((contenders & atomic_bitmap_thread_mask(i)) != 0)
 			{
@@ -1131,7 +1132,7 @@ take_write_lock(ThreadContext *self, ShmLock *lock, ShmPointer container_shm, bo
 	contenders = atomic_bitmap_contenders(&lock->reader_lock, self->index);
 	if (contenders != 0)
 	{
-		for (int idx = 0; idx < 64; ++idx)
+		for (int idx = 0; idx < isizeof(ShmReaderBitmap)*8; ++idx)
 		{
 			if (atomic_bitmap_check_me(&contenders, idx))
 			{
@@ -1921,9 +1922,9 @@ transaction_lock_write(ThreadContext *thread, ShmLock *lock, ShmPointer lock_shm
 				SHM_UNUSED(had_read_lock);
 				if (had_write_lock)
 				{
-					int rslt = take_write_lock__checks(thread, lock, lock_shm, false); // we don't care about low priorities here, we had this lock long time ago
+					int check_rslt = take_write_lock__checks(thread, lock, lock_shm, false); // we don't care about low priorities here, we had this lock long time ago
 					// having reading low-priority contenders is fine for us because we've got exclusive lock first.
-					if (rslt != RESULT_PREEMPTED)
+					if (check_rslt != RESULT_PREEMPTED)
 						return RESULT_OK;
 					else
 						return RESULT_PREEMPTED; // lock had to be registered by now
@@ -2119,15 +2120,10 @@ transaction_parent_mode(ThreadContext *thread, int *transaction_mode, int *trans
 	int idx = thread->private_data->transaction_stack->count - 1;
 	if (thread->private_data->transaction_stack->count > 0)
 	{
-		int idx = thread->private_data->transaction_stack->count - 1;
 		if (transaction_mode)
 			*transaction_mode = thread->private_data->transaction_stack->modes[idx].transaction_mode;
 		if (transaction_lock_mode)
 			*transaction_mode = thread->private_data->transaction_stack->modes[idx].transaction_lock_mode;
-	}
-	else
-	{
-
 	}
 	return idx;
 }
@@ -2653,9 +2649,9 @@ debug_id_to_str(int id)
 int
 init_superblock(const char *id)
 {
-	uint32_t v1 = (((uintptr_t)SHM_INVALID_BLOCK) << SHM_OFFSET_BITS) +
-		SHM_INVALID_OFFSET;
-	uint32_t v2 = ~(uint32_t)0;
+	ShmWord v1 = (((uintptr_t)SHM_INVALID_BLOCK) << SHM_OFFSET_BITS) +
+				 SHM_INVALID_OFFSET;
+	ShmWord v2 = ~(ShmWord)0;
 	shmassert(v1 == v2);
 
 	init_mm_maps();

@@ -27,6 +27,7 @@
 
 #include "ptypes.h"
 #include <stdbool.h>
+#include <stddef.h>
 
 #if (defined(P_OS_WIN) || defined(P_OS_WIN64))
 // Windows
@@ -75,14 +76,28 @@ typedef vl uintptr_t *PShmPointer;
 	handle_to_coordinator(ShmProcessID coordinator_process, ShmHandle handle, bool close);
 #endif
 
-// # define SHM_BLOCK_COUNT 1024*4
-# define SHM_BLOCK_COUNT 2*1024
-# define SHM_BLOCK_GROUP_SIZE 16
-# define SHM_FIXED_CHUNK_SIZE 1024*1024
-# define SHM_BLOCK_BITS 12
-# define SHM_OFFSET_BITS 20
-# define SHM_INVALID_BLOCK ((1 << SHM_BLOCK_BITS) - 1)
-# define SHM_INVALID_OFFSET ((1 << SHM_OFFSET_BITS) - 1)
+#if INTPTR_MAX == 2147483647
+	// # define SHM_BLOCK_COUNT 1024*4
+	# define SHM_BLOCK_COUNT 2*1024
+	# define SHM_BLOCK_GROUP_SIZE 16
+	// actual max mmaps count is SHM_BLOCK_COUNT / SHM_BLOCK_GROUP_SIZE
+	# define SHM_FIXED_CHUNK_SIZE 1024*1024
+	# define SHM_BLOCK_BITS 12
+	# define SHM_OFFSET_BITS 20
+	# define SHM_INVALID_BLOCK ((1 << SHM_BLOCK_BITS) - 1)
+	# define SHM_MAX_BLOCK (SHM_BLOCK_COUNT - 1)
+	# define SHM_INVALID_OFFSET ((1 << SHM_OFFSET_BITS) - 1)
+#else
+	# define SHM_BLOCK_COUNT 64*1024
+	# define SHM_BLOCK_GROUP_SIZE 16
+	// actual mmaps page table size is SHM_BLOCK_COUNT / SHM_BLOCK_GROUP_SIZE
+	# define SHM_FIXED_CHUNK_SIZE 1024*1024
+	# define SHM_BLOCK_BITS 44
+	# define SHM_OFFSET_BITS 20
+	# define SHM_INVALID_BLOCK ((UINT64_C(1) << SHM_BLOCK_BITS) - 1)
+	# define SHM_MAX_BLOCK (SHM_BLOCK_COUNT - 1)
+	# define SHM_INVALID_OFFSET ((UINT64_C(1) << SHM_OFFSET_BITS) - 1)
+#endif
 
 // MM
 #define SIZE_CLASS_LARGEST 8

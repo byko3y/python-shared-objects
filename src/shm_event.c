@@ -118,7 +118,7 @@ shm_promise_send_signal(ThreadContext *thread, ShmPromise *promise)
 		ShmReaderBitmap waiters = atomic_bitmap_get(&promise->waiters);
 		if (waiters == 0)
 			break;
-		for (int i = 0; i < 64; ++i)
+		for (int i = 0; i < isizeof(ShmReaderBitmap)*8; ++i)
 		{
 			if (atomic_bitmap_reset(&promise->waiters, i))
 			{

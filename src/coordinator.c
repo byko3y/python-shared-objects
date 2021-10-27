@@ -107,8 +107,8 @@ process_garbage(void)
 				p_atomic_int_set(&thread->test_finished, 1);
 				if (p_atomic_int_get(&thread->transaction_mode) != TRANSACTION_TRANSIENT)
 				{
-					int idx = superblock->coordinator_data.count;
-					superblock->coordinator_data.threads[idx] = thread_shm;
+					int newitem = superblock->coordinator_data.count;
+					superblock->coordinator_data.threads[newitem] = thread_shm;
 					superblock->coordinator_data.count += 1;
 				}
 			}

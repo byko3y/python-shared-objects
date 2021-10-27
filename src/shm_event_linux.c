@@ -152,9 +152,9 @@ shm_lock_acquire_with_cb(ShmSimpleLock *lock, ShmSimpleLockCallback callback, vo
 			}
 			if (callback)
 			{
-				int rslt = callback(callback_data);
-				if (RESULT_INVALID != rslt)
-					return rslt;
+				int call_r = callback(callback_data);
+				if (RESULT_INVALID != call_r)
+					return call_r;
 			}
 			old_state = futex_exchange(&lock->lock_state, 2);
 		}
